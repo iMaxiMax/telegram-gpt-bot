@@ -1,17 +1,18 @@
 import os
 import telebot
 from telebot import types
-from openai import OpenAI
+import openai
 
 # Получаем токены из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
+# Проверка на наличие переменных окружения
 if not TOKEN or not OPENAI_KEY:
     raise ValueError("❌ Переменные окружения не заданы! Проверь TELEGRAM_TOKEN и OPENAI_API_KEY.")
 
 bot = telebot.TeleBot(TOKEN)
-client = OpenAI(api_key=OPENAI_KEY)
+openai.api_key = OPENAI_KEY
 
 # Главное меню
 def main_menu():
@@ -33,8 +34,8 @@ def send_welcome(message):
 # GPT-ответ
 def ask_gpt(question):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4",
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # ✅ бесплатная модель
             messages=[
                 {
                     "role": "system",
@@ -51,10 +52,10 @@ def ask_gpt(question):
             max_tokens=300,
             temperature=0.7
         )
-        return response.choices[0].message.content
+        return response.choices[0].message['content']
     except Exception as e:
         print("Ошибка GPT:", e)
-        return "⚠️ Что-то пошло не так. Попробуй ещё раз чуть позже."
+        return "⚠️ Не удалось получить ответ от ИИ. Попробуй позже."
 
 # Обработка всех сообщений
 @bot.message_handler(func=lambda message: True)
@@ -62,15 +63,15 @@ def handle_message(message):
     text = message.text.strip()
 
     if text == "🎓 О школе":
-        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары soundmusic, обучаем с нуля и не только. Индивидуально, по шагам, с удовольствием. Что у нас есть для тебя? Знакомься: https://soundmusic54.ru/#menu")
+        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары SoundMusic, обучаем с нуля и не только. Индивидуально, по шагам, с удовольствием. Знакомься: https://soundmusic54.ru/#menu")
     elif text == "💰 Цены":
-        bot.send_message(message.chat.id, "💰 Актуальные цены на обучение можно посмотреть тут:\nhttps://soundmusic54.ru/#price")
+        bot.send_message(message.chat.id, "💰 Актуальные цены на обучение: https://soundmusic54.ru/#price")
     elif text == "📝 Как записаться":
-        bot.send_message(message.chat.id, "📝 Просто оставь заявку на сайте:\nhttps://soundmusic54.ru/#sign\nИли напиши сюда, и мы поможем.")
+        bot.send_message(message.chat.id, "📝 Просто оставь заявку:\nhttps://soundmusic54.ru/#sign\nИли напиши сюда — мы поможем.")
     elif text == "🥇 Уровни учеников":
         bot.send_message(message.chat.id, "🥇 У нас учатся и новички, и профи. Программа подстраивается под твой уровень: https://soundmusic54.ru/top")
     elif text == "🎯 Цели и результат":
-        bot.send_message(message.chat.id, "🎯 Мы помогаем достичь твоей цели: научиться играть, писать музыку или выступать: https://soundmusic54.ru/production")
+        bot.send_message(message.chat.id, "🎯 Мы помогаем достичь цели: научиться играть, писать музыку или выступать: https://soundmusic54.ru/production")
     else:
         bot.send_chat_action(message.chat.id, 'typing')
         gpt_reply = ask_gpt(text)
