@@ -32,25 +32,29 @@ def send_welcome(message):
 
 # GPT-ответ
 def ask_gpt(question):
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. "
-                    "Ты отвечаешь по делу, с заботой, без давления, дружелюбно и по-человечески."
-                )
-            },
-            {
-                "role": "user",
-                "content": question
-            }
-        ],
-        max_tokens=300,
-        temperature=0.7
-    )
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. "
+                        "Ты отвечаешь по делу, с заботой, без давления, дружелюбно и по-человечески."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": question
+                }
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print("Ошибка GPT:", e)
+        return "⚠️ Что-то пошло не так. Попробуй ещё раз чуть позже."
 
 # Обработка всех сообщений
 @bot.message_handler(func=lambda message: True)
@@ -68,13 +72,9 @@ def handle_message(message):
     elif text == "🎯 Цели и результат":
         bot.send_message(message.chat.id, "🎯 Мы помогаем достичь твоей цели: научиться играть, писать музыку или выступать: https://soundmusic54.ru/production")
     else:
-        try:
-            bot.send_chat_action(message.chat.id, 'typing')
-            gpt_reply = ask_gpt(text)
-            bot.send_message(message.chat.id, gpt_reply)
-        except Exception as e:
-            print("Ошибка GPT:", e)
-            bot.send_message(message.chat.id, "⚠️ Что-то пошло не так. Попробуй ещё раз чуть позже.")
+        bot.send_chat_action(message.chat.id, 'typing')
+        gpt_reply = ask_gpt(text)
+        bot.send_message(message.chat.id, gpt_reply)
 
 print("Бот с ИИ запущен!")
 bot.polling()
