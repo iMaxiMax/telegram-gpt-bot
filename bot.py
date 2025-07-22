@@ -1,20 +1,17 @@
 import os
 import telebot
 from telebot import types
-from openrouter import OpenRouterClient
+from openrouter import OpenRouter  # Импортируем OpenRouter
 
-# Получаем токены из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
 if not TOKEN or not OPENROUTER_KEY:
     raise ValueError("❌ Переменные окружения не заданы! Проверь TELEGRAM_TOKEN и OPENROUTER_API_KEY.")
 
-# Инициализация бота и клиента OpenRouter
 bot = telebot.TeleBot(TOKEN)
-client = OpenRouterClient(api_key=OPENROUTER_KEY)
+client = OpenRouter(api_key=OPENROUTER_KEY)  # Правильная инициализация клиента
 
-# Главное меню
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("🎓 О школе", "💰 Цены")
@@ -22,7 +19,6 @@ def main_menu():
     markup.row("🎯 Цели и результат")
     return markup
 
-# Ответ на /start
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.send_message(
@@ -31,7 +27,6 @@ def send_welcome(message):
         reply_markup=main_menu()
     )
 
-# Запрос к OpenRouter (Zephyr-7B)
 def ask_openrouter(question):
     response = client.chat.completions.create(
         model="huggingfaceh4/zephyr-7b-beta",
@@ -53,7 +48,6 @@ def ask_openrouter(question):
     )
     return response.choices[0].message.content
 
-# Обработка всех сообщений
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     text = message.text.strip()
