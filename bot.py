@@ -1,18 +1,17 @@
 import os
 import telebot
 from telebot import types
-import openai
+from openai import OpenAI
 
 # Получаем токены из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
-# Проверка переменных окружения
 if not TOKEN or not OPENAI_KEY:
     raise ValueError("❌ Переменные окружения не заданы! Проверь TELEGRAM_TOKEN и OPENAI_API_KEY.")
 
 bot = telebot.TeleBot(TOKEN)
-openai.api_key = OPENAI_KEY
+client = OpenAI(api_key=OPENAI_KEY)
 
 # Главное меню
 def main_menu():
@@ -33,7 +32,7 @@ def send_welcome(message):
 
 # GPT-ответ
 def ask_gpt(question):
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {
@@ -51,7 +50,7 @@ def ask_gpt(question):
         max_tokens=300,
         temperature=0.7
     )
-    return response.choices[0].message['content']
+    return response.choices[0].message.content
 
 # Обработка всех сообщений
 @bot.message_handler(func=lambda message: True)
