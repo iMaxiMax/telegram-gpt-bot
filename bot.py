@@ -7,6 +7,10 @@ import openai
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
+# Проверка переменных окружения
+if not TOKEN or not OPENAI_KEY:
+    raise ValueError("❌ Переменные окружения не заданы! Проверь TELEGRAM_TOKEN и OPENAI_API_KEY.")
+
 bot = telebot.TeleBot(TOKEN)
 openai.api_key = OPENAI_KEY
 
