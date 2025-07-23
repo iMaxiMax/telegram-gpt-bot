@@ -1,7 +1,7 @@
 import os
 import telebot
 from telebot import types
-from openrouter_sdk import OpenRouter
+from openrouter import OpenRouter
 
 # Получаем токены из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
