@@ -34,16 +34,16 @@ def ask_gpt(question: str) -> str:
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": "openchat/openchat-3.5-0106:free",
-        "messages": [
-            {"role": "system",
-             "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
-            {"role": "user", "content": question}
-        ],
-        "max_tokens": 100,
-        "temperature": 0.7
-    }
+   payload = {
+    "model": "tngtech/deepseek-r1t2-chimera:free",
+    "messages": [
+        {"role": "system", "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
+        {"role": "user", "content": question}
+    ],
+    "max_tokens": 100,
+    "temperature": 0.7
+}
+
 
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
