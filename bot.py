@@ -2,17 +2,13 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import json
 import re
-from flask import Flask, request
 
 # --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # например, https://worker-production-c8215.up.railway.app
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-app = Flask(__name__)
 
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -100,20 +96,10 @@ def ask_deepseek(question: str) -> str:
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
 def format_bold_markdown(text: str) -> str:
-    # Заменяем __текст__ и **текст** на *текст* для Telegram Markdown
     text = text.replace("__", "*").replace("**", "*")
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     return text
 
-# --- Flask webhook route для Telegram ---
-@app.route('/' + TELEGRAM_BOT_TOKEN, methods=['POST'])
-def webhook():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return '', 200
-
-# --- Обработчики сообщений бота ---
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
@@ -135,14 +121,7 @@ def handle_message(message):
     for i in range(0, len(safe_answer), max_len):
         bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
 
-def setup_webhook():
-    bot.remove_webhook()
-    webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}"
-    bot.set_webhook(url=webhook_url)
-    print(f"Webhook установлен: {webhook_url}")
-
 if __name__ == "__main__":
     load_site()
-    setup_webhook()  # Устанавливаем webhook напрямую
     print("🚀 Бот запущен!")
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    bot.polling(none_stop=True)
