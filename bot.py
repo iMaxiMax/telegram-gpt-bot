@@ -36,20 +36,22 @@ def ask_gpt(question: str) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openchat/openchat-3.5-0106:free",
+        "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
             {"role": "system",
              "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
             {"role": "user", "content": question}
         ],
-        "max_tokens": 100,
+        "max_tokens": 150,
         "temperature": 0.7
     }
+
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers=headers,
         json=payload
     )
+
     if resp.ok:
         return resp.json()["choices"][0]["message"]["content"]
     else:
@@ -76,7 +78,14 @@ def handle_message(message):
                 raise e
     else:
         bot.send_chat_action(message.chat.id, 'typing')
-        bot.send_message(message.chat.id, ask_gpt(text), reply_markup=main_menu())
+        reply = ask_gpt(text)
+        try:
+            bot.send_message(message.chat.id, reply, reply_markup=main_menu())
+        except ApiTelegramException as e:
+            if e.result_json.get('description') == 'Forbidden: bot was blocked by the user':
+                print(f"Пользователь {message.chat.id} заблокировал бота.")
+            else:
+                raise e
 
-print("🚀 Бот с openchat-3.5 запущен!")
+print("🚀 Бот с DeepSeek запущен!")
 bot.infinity_polling()
