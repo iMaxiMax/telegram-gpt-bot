@@ -1,17 +1,15 @@
 import os
 import telebot
 from telebot import types
-from openai import OpenAI  # Если хочешь, заменю на openrouter_sdk
+import requests
 
-# Получаем токены из переменных окружения (без хардкода!)
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-if not TOKEN or not OPENAI_KEY:
-    raise ValueError("❌ Задайте TELEGRAM_TOKEN и OPENAI_API_KEY в переменных окружения!")
+if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
+    raise ValueError("❌ TELEGRAM_TOKEN или OPENROUTER_API_KEY не заданы!")
 
-bot = telebot.TeleBot(TOKEN)
-client = OpenAI(api_key=OPENAI_KEY)
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -29,45 +27,47 @@ def send_welcome(message):
     )
 
 def ask_gpt(question):
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. "
-                    "Ты отвечаешь по делу, с заботой, без давления, дружелюбно и по-человечески."
-                )
-            },
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "https://t.me/YourBotUsername",  # Замени на ссылку на своего бота
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "openai/gpt-4",
+        "messages": [
+            {"role": "system", "content": "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. Отвечай дружелюбно и понятно."},
             {"role": "user", "content": question}
-        ],
-        max_tokens=300,
-        temperature=0.7
-    )
-    return response.choices[0].message.content
+        ]
+    }
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"]
+    else:
+        print("Ошибка OpenRouter:", response.text)
+        return "⚠️ Произошла ошибка при обращении к OpenRouter."
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     text = message.text.strip()
 
     if text == "🎓 О школе":
-        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары soundmusic, обучаем с нуля и не только. Индивидуально, по шагам, с удовольствием. Подробнее: https://soundmusic54.ru/#menu")
+        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары soundmusic, обучаем с нуля и не только. Подробнее: https://soundmusic54.ru/#menu")
     elif text == "💰 Цены":
-        bot.send_message(message.chat.id, "💰 Актуальные цены: https://soundmusic54.ru/#price")
+        bot.send_message(message.chat.id, "💰 Цены: https://soundmusic54.ru/#price")
     elif text == "📝 Как записаться":
-        bot.send_message(message.chat.id, "📝 Заявка на сайте: https://soundmusic54.ru/#sign\nИли напиши здесь, поможем.")
+        bot.send_message(message.chat.id, "📝 Запишись на сайте:\nhttps://soundmusic54.ru/#sign\nИли пиши сюда.")
     elif text == "🥇 Уровни учеников":
-        bot.send_message(message.chat.id, "🥇 Программа под твой уровень: https://soundmusic54.ru/top")
+        bot.send_message(message.chat.id, "🥇 Учим и новичков, и профи: https://soundmusic54.ru/top")
     elif text == "🎯 Цели и результат":
-        bot.send_message(message.chat.id, "🎯 Помогаем достичь цели: https://soundmusic54.ru/production")
+        bot.send_message(message.chat.id, "🎯 Достигаем цели вместе: https://soundmusic54.ru/production")
     else:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
-            gpt_reply = ask_gpt(text)
-            bot.send_message(message.chat.id, gpt_reply)
+            reply = ask_gpt(text)
+            bot.send_message(message.chat.id, reply)
         except Exception as e:
-            print("Ошибка GPT:", e)
+            print("Ошибка:", e)
             bot.send_message(message.chat.id, "⚠️ Что-то пошло не так. Попробуй позже.")
 
-print("Бот с ИИ запущен!")
+print("Бот запущен!")
 bot.polling()
