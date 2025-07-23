@@ -2,115 +2,134 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import time
+import json
 
-# --- Конфиги ---
+# --- Настройки ---
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
-    print("❌ Ошибка: Не заданы TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY в переменных окружения.")
-    exit(1)
-
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# --- Ссылки для парсинга ---
-URLS = {
-    "основа": "https://soundmusic54.ru",
-    "продакшн": "https://soundmusic54.ru/production",
-    "фингерстайл": "https://soundmusic54.ru/fingerstyle",
-    "электруха": "https://soundmusic54.ru/electricguitar",
-    "магазин": "https://soundmusic54.ru/shop",
-    "рейтинг": "https://soundmusic54.ru/top",
-    "дорожная карта": "https://soundmusic54.ru/way",
-    "стратегия": "https://soundmusic54.ru/plan",
-    "faq": "https://soundmusic54.ru/faq",
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/115.0 Safari/537.36")
 }
 
-def get_page_text(url):
+BASE_URL = "https://soundmusic54.ru"
+PATHS = [
+    "",              # основа
+    "production",    # продакшн
+    "fingerstyle",   # фингерстайл
+    "electricguitar",# электруха
+    "shop",          # магазин сша
+    "top",           # рейтинг учеников
+    "way",           # дорожная карта обучения
+    "plan",          # стратегия обучения
+    "faq"            # FAQ
+]
+
+# --- Загрузка и подготовка сайта ---
+
+site_contents = {}
+
+def fetch_page(url):
     try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        main_content = soup.find("main") or soup.find("article") or soup.find("div", class_="content") or soup.body
-        if main_content:
-            return main_content.get_text(separator="\n", strip=True)
-        else:
-            return ""
-    except Exception as e:
+        resp = requests.get(url, headers=HEADERS)
+        resp.raise_for_status()
+        return resp.text
+    except requests.HTTPError as e:
         print(f"Ошибка при загрузке {url}: {e}")
-        return ""
+        return None
 
-print("⚙️ Загружаю страницы сайта...")
-site_texts = {}
-for name, url in URLS.items():
-    print(f"Загружаю {name}...")
-    site_texts[name] = get_page_text(url)
-    time.sleep(1)  # Чтобы не нагружать сайт
+def load_site():
+    print("⚙️ Загружаю страницы сайта...")
+    for path in PATHS:
+        url = f"{BASE_URL}/{path}" if path else BASE_URL
+        print(f"Загружаю {url}...")
+        html = fetch_page(url)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+            # Для простоты сохраняем чистый текст страницы
+            text = soup.get_text(separator="\n", strip=True)
+            site_contents[path or "base"] = text
+        else:
+            site_contents[path or "base"] = ""
+    print("✅ Загрузка сайта завершена.")
 
-print("✅ Загрузка сайта завершена.")
+# --- Функция запроса к OpenRouter DeepSeek ---
 
-def search_in_site(question, site_texts):
-    question_words = set(word.lower() for word in question.split() if len(word) > 3)
-    best_match = ""
-    max_hits = 0
-    for section, text in site_texts.items():
-        hits = sum(word in text.lower() for word in question_words)
-        if hits > max_hits and hits > 0:
-            max_hits = hits
-            best_match = text
-    if best_match:
-        return best_match[:1500]
-    else:
-        return ""
-
-def ask_gpt_with_context(question, context_text):
+def ask_deepseek(question: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
     }
 
-    messages = [
-        {"role": "system", "content": "Ты — дружелюбный и честный помощник SoundMusic. Отвечай понятно и доброжелательно."}
-    ]
-
-    if context_text:
-        messages.append({"role": "system", "content": f"Используй информацию из сайта SoundMusic:\n{context_text}"})
-
-    messages.append({"role": "user", "content": question})
+    # Добавляем в system prompt краткую сводку с сайта, чтобы бот отвечал с учетом сайта
+    site_summary = "\n\n".join(
+        f"Раздел '{key}': {val[:800]}"  # берем первые 800 символов для ограничения
+        for key, val in site_contents.items()
+    )
 
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
-        "messages": messages,
-        "max_tokens": 400,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Ты — тёплый и дружелюбный помощник SoundMusic, "
+                    "используй информацию с сайта для ответов, "
+                    "не придумывай лишнего, отвечай понятно и подробно.\n"
+                    f"Вот данные с сайта:\n{site_summary}"
+                )
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+        "max_tokens": 300,
         "temperature": 0.7
     }
 
     try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=15
-        )
-        if response.ok:
-            data = response.json()
-            return data.get("choices", [{}])[0].get("message", {}).get("content", "⚠️ Пустой ответ.")
-        else:
-            print("❌ Ошибка OpenRouter:", response.status_code, response.text)
-            return "⚠️ Ошибка сервиса. Попробуй позже."
+        resp = requests.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return answer or "⚠️ Пустой ответ от сервиса."
     except Exception as e:
-        print("❌ Исключение при обращении к OpenRouter:", str(e))
-        return "⚠️ Что-то пошло не так. Попробуй позже."
+        print("❌ Ошибка запроса к OpenRouter:", str(e))
+        return "⚠️ Ошибка сервиса. Попробуй позже."
 
-@bot.message_handler(func=lambda message: True)
+# --- Обработка сообщений Telegram ---
+
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    welcome_text = (
+        "Привет! Я помощник SoundMusic. "
+        "Задавай вопросы про курсы, обучение и всё, что связано с сайтом soundmusic54.ru."
+    )
+    bot.send_message(message.chat.id, welcome_text)
+
+@bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    question = message.text
-    print(f"Получен вопрос: {question}")
-    context = search_in_site(question, site_texts)
-    answer = ask_gpt_with_context(question, context)
-    bot.send_message(message.chat.id, answer)
+    question = message.text.strip()
+    if not question:
+        bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
+        return
+    bot.send_chat_action(message.chat.id, 'typing')
+    answer = ask_deepseek(question)
+    # Разбиваем ответ на части по 4096 символов (лимит Telegram)
+    max_len = 4096
+    for i in range(0, len(answer), max_len):
+        bot.send_message(message.chat.id, answer[i:i+max_len])
+
+# --- Запуск ---
 
 if __name__ == "__main__":
+    load_site()
     print("🚀 Бот запущен!")
     bot.polling(none_stop=True)
