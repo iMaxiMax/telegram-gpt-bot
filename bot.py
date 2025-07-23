@@ -6,7 +6,6 @@ import json
 import re
 
 # --- Настройки ---
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -21,14 +20,14 @@ HEADERS = {
 BASE_URL = "https://soundmusic54.ru"
 PATHS = [
     "",              # основа
-    "production",    # продакшн
-    "fingerstyle",   # фингерстайл
-    "electricguitar",# электруха
-    "shop",          # магазин сша
-    "top",           # рейтинг учеников
-    "way",           # дорожная карта обучения
-    "plan",          # стратегия обучения
-    "faq"            # FAQ
+    "production",
+    "fingerstyle",
+    "electricguitar",
+    "shop",
+    "top",
+    "way",
+    "plan",
+    "faq"
 ]
 
 site_contents = {}
@@ -63,15 +62,17 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
+    important_sections = ["base", "faq", "plan", "way"]
     site_summary = "\n\n".join(
         f"Раздел '{key}': {val[:800]}"
-        for key, val in site_contents.items()
+        for key, val in site_contents.items() if key in important_sections
     )
 
     system_prompt = (
-        "Ты — тёплый и дружелюбный помощник SoundMusic, "
-        "используй информацию с сайта для ответов, "
-        "не придумывай лишнего, отвечай понятно и подробно.\n"
+        "Ты — тёплый и дружелюбный помощник школы SoundMusic. "
+        "Помогай пользователю, опираясь на информацию с сайта. "
+        "Если точной информации нет — честно скажи об этом и предложи связаться с администратором или перейти на сайт. "
+        "Не выдумывай. Отвечай понятно и по делу.\n"
         f"Вот данные с сайта:\n{site_summary}"
     )
 
@@ -81,7 +82,7 @@ def ask_deepseek(question: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question}
         ],
-        "max_tokens": 300,
+        "max_tokens": 1000,
         "temperature": 0.7
     }
 
@@ -89,50 +90,17 @@ def ask_deepseek(question: str) -> str:
         resp = requests.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         return answer or "⚠️ Пустой ответ от сервиса."
     except Exception as e:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
-def escape_markdown(text: str) -> str:
-    # Экранируем специальные символы MarkdownV2 Telegram, чтобы жирный текст работал корректно
-    # Telegram MarkdownV2 требует экранировать _ * [ ] ( ) ~ ` > # + - = | { } . !
-    escape_chars = r'\_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-
 def format_bold_markdown(text: str) -> str:
-    # Заменяем __текст__ на *текст* и потом экранируем все символы, кроме звездочек
-    # Для MarkdownV2 жирный текст — **текст**
-    # Но если мы не экранируем правильно — Telegram выдаст ошибку
-    # Логика:
-    # 1) заменим __текст__ на **текст**
-    # 2) потом экранируем все спецсимволы, кроме звездочек внутри ** **
-    # Для упрощения:
-    # - заменим __текст__ на **текст**
-    # - экранируем всё кроме звездочек (т.е. не экранируем сами **)
-    
-    # Сначала замена __текст__ на **текст**
-    text = re.sub(r'__(.+?)__', r'**\1**', text)
-
-    # Разобьём текст на куски между ** (жирным) и остальной текст
-    parts = re.split(r'(\*\*.*?\*\*)', text)
-    result = []
-    for part in parts:
-        if part.startswith("**") and part.endswith("**"):
-            # внутри жирного не экранируем звездочки, но экранируем остальное
-            inner = part[2:-2]
-            inner_escaped = escape_markdown(inner)
-            result.append(f"**{inner_escaped}**")
-        else:
-            # экранируем весь текст
-            result.append(escape_markdown(part))
-    return "".join(result)
-
-def send_long_message(bot, chat_id, text, parse_mode=None):
-    max_len = 4000
-    for i in range(0, len(text), max_len):
-        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode)
+    # Заменяем __текст__ и **текст** на *текст* для Telegram Markdown
+    text = text.replace("__", "*").replace("**", "*")
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    return text
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -151,7 +119,9 @@ def handle_message(message):
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
     safe_answer = format_bold_markdown(answer)
-    send_long_message(bot, message.chat.id, safe_answer, parse_mode="MarkdownV2")
+    max_len = 4096
+    for i in range(0, len(safe_answer), max_len):
+        bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
 
 if __name__ == "__main__":
     load_site()
