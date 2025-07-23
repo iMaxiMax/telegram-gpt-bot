@@ -1,6 +1,9 @@
 import os
 import requests
+from bs4 import BeautifulSoup
 import telebot
+import json
+import re
 
 # --- Настройки ---
 
@@ -9,18 +12,49 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# --- Ключевые факты с сайта, которые подаем модели ---
-# Обновляй этот словарь вручную при изменениях на сайте!
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/115.0 Safari/537.36")
+}
 
-SITE_FACTS = """
-- Бесплатное пробное занятие — 1 занятие.
-- Пробная неделя обучения отсутствует.
-- Стоимость обучения зависит от формата (акустика, электрогитара, фингерстайл) и длительности курса.
-- Для уточнения стоимости и записи звоните: +7 923 0000 508 (WhatsApp/Telegram).
-- Школа гарантирует индивидуальный подход и 100% результат при выполнении рекомендаций.
-"""
+BASE_URL = "https://soundmusic54.ru"
+PATHS = [
+    "",              # основа
+    "production",    # продакшн
+    "fingerstyle",   # фингерстайл
+    "electricguitar",# электруха
+    "shop",          # магазин сша
+    "top",           # рейтинг учеников
+    "way",           # дорожная карта обучения
+    "plan",          # стратегия обучения
+    "faq"            # FAQ
+]
 
-# --- Функция для запроса к OpenRouter DeepSeek ---
+site_contents = {}
+
+def fetch_page(url):
+    try:
+        resp = requests.get(url, headers=HEADERS)
+        resp.raise_for_status()
+        return resp.text
+    except requests.HTTPError as e:
+        print(f"Ошибка при загрузке {url}: {e}")
+        return None
+
+def load_site():
+    print("⚙️ Загружаю страницы сайта...")
+    for path in PATHS:
+        url = f"{BASE_URL}/{path}" if path else BASE_URL
+        print(f"Загружаю {url}...")
+        html = fetch_page(url)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+            text = soup.get_text(separator="\n", strip=True)
+            site_contents[path or "base"] = text
+        else:
+            site_contents[path or "base"] = ""
+    print("✅ Загрузка сайта завершена.")
 
 def ask_deepseek(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -29,11 +63,17 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
+    # Краткая сводка с сайта (первые 800 символов каждого раздела)
+    site_summary = "\n\n".join(
+        f"Раздел '{key}': {val[:800]}"
+        for key, val in site_contents.items()
+    )
+
     system_prompt = (
-        "Ты — тёплый и дружелюбный помощник SoundMusic.\n"
-        "Используй только точную информацию из этих данных:\n"
-        f"{SITE_FACTS}\n"
-        "Не придумывай ничего лишнего. Если точной информации нет, честно скажи, что лучше уточнить у администрации."
+        "Ты — тёплый и дружелюбный помощник SoundMusic, "
+        "используй информацию с сайта для ответов, "
+        "не придумывай лишнего, отвечай понятно и подробно.\n"
+        f"Вот данные с сайта:\n{site_summary}"
     )
 
     payload = {
@@ -43,10 +83,7 @@ def ask_deepseek(question: str) -> str:
             {"role": "user", "content": question}
         ],
         "max_tokens": 300,
-        "temperature": 0.5,
-        "top_p": 1,
-        "frequency_penalty": 0,
-        "presence_penalty": 0
+        "temperature": 0.7
     }
 
     try:
@@ -59,29 +96,19 @@ def ask_deepseek(question: str) -> str:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
-# --- Функция для безопасного преобразования Markdown в Telegram MarkdownV2 ---
-import re
-def markdown_to_telegram_md(text: str) -> str:
-    # Экранируем специальные символы Telegram MarkdownV2
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    def esc(m):
-        char = m.group(0)
-        if char == "*":
-            # заменим **текст** на Telegram жирный __текст__
-            return ""
-        return "\\" + char
-    # Заменяем двойные **...** на __...__ (жирный в MarkdownV2)
-    text = re.sub(r"\*\*(.+?)\*\*", r"__\1__", text)
-    # Экранируем остальные спецсимволы
-    text = re.sub(f"[{re.escape(escape_chars)}]", esc, text)
+def format_bold_markdown(text: str) -> str:
+    # Заменяем двойные подчёркивания __текст__ на **текст** для Telegram Markdown
+    # Также можно дополнительно убрать HTML-теги <br> и прочее, если нужно:
+    text = text.replace("__", "**")
+    # Удаляем возможные <br> или заменяем на перенос строки
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    # Можно добавить и другие замены или очистку по необходимости
     return text
-
-# --- Обработка сообщений Telegram ---
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "Привет! Я помощник SoundMusic.\n"
+        "Привет! Я помощник SoundMusic. "
         "Задавай вопросы про курсы, обучение и всё, что связано с сайтом soundmusic54.ru."
     )
     bot.send_message(message.chat.id, welcome_text)
@@ -94,15 +121,12 @@ def handle_message(message):
         return
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
-    safe_answer = markdown_to_telegram_md(answer)
-
-    # Отправляем ответ по частям, если длинный
+    safe_answer = format_bold_markdown(answer)
     max_len = 4096
     for i in range(0, len(safe_answer), max_len):
-        bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="MarkdownV2")
-
-# --- Запуск ---
+        bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
 
 if __name__ == "__main__":
+    load_site()
     print("🚀 Бот запущен!")
     bot.polling(none_stop=True)
