@@ -126,7 +126,7 @@ def handle_message(message):
     for i in range(0, len(safe_answer), max_len):
         bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
 
-# Webhook endpoint для Telegram
+# Webhook route для Telegram
 @app.route('/' + TELEGRAM_BOT_TOKEN, methods=['POST'])
 def webhook():
     json_string = request.get_data().decode('utf-8')
@@ -134,14 +134,16 @@ def webhook():
     bot.process_new_updates([update])
     return '', 200
 
+# Установка webhook при старте приложения
+@app.before_first_request
+def setup_webhook():
+    bot.remove_webhook()
+    webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}"
+    bot.set_webhook(url=webhook_url)
+    print(f"Webhook установлен: {webhook_url}")
+
 if __name__ == "__main__":
     load_site()
-    print("⚙️ Загрузка сайта завершена.")
-
-    # Установка webhook вручную при старте
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL + '/' + TELEGRAM_BOT_TOKEN)
-    print(f"Webhook установлен на {WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}")
-
-    # Запускаем Flask сервер
+    print("🚀 Бот запущен!")
+    # Порт и хост для Railway или локально
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
