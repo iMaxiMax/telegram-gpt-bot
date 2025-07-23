@@ -1,100 +1,100 @@
 import os
+import sys
 import requests
-import telebot
 from bs4 import BeautifulSoup
+import telebot
+import re
 
+# --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
+    raise RuntimeError("❌ Не заданы переменные TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY")
+
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# Стабильные бесплатные модели
-MODEL_LIST = [
-    "openchat/openchat-7b:free",
-    "mistralai/mistral-7b-instruct:free",
-    "turing/turing-mixtral-8x7b:free",
-    "tngtech/deepseek-r1t2-chimera:free"
-]
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+BASE_URL = "https://soundmusic54.ru"
+PATHS = ["", "production", "fingerstyle", "electricguitar", "shop", "top", "way", "plan", "faq"]
+site_contents = {}
 
-# Сайт, который парсим
-SITE_URLS = [
-    "https://soundmusic54.ru",
-    "https://soundmusic54.ru/production",
-    "https://soundmusic54.ru/fingerstyle",
-    "https://soundmusic54.ru/electricguitar",
-    "https://soundmusic54.ru/shop",
-    "https://soundmusic54.ru/top",
-    "https://soundmusic54.ru/way",
-    "https://soundmusic54.ru/plan",
-    "https://soundmusic54.ru/faq",
-]
-
-site_data = ""
+def fetch_page(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        print(f"Ошибка при загрузке {url}: {e}")
+        return None
 
 def load_site():
-    global site_data
-    print("⚙️ Загружаю страницы сайта...")
-    text_blocks = []
-    for url in SITE_URLS:
-        print(f"Загружаю {url}...")
-        try:
-            resp = requests.get(url, timeout=10)
-            soup = BeautifulSoup(resp.text, "html.parser")
-            text = soup.get_text(separator=' ', strip=True)
-            text_blocks.append(text)
-        except Exception as e:
-            print(f"❌ Ошибка при загрузке {url}: {e}")
-    site_data = "\n".join(text_blocks)
-    print("✅ Загрузка сайта завершена.\n")
+    print("⚙️ Загружаю сайт...")
+    for p in PATHS:
+        u = BASE_URL + ("/" + p if p else "")
+        html = fetch_page(u)
+        text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True) if html else ""
+        site_contents[p or "base"] = text
+    print("✅ Сайт загружен")
 
-def ask_openrouter(message_text):
-    for model in MODEL_LIST:
-        print(f"🔄 Пробую модель: {model}")
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        json_data = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": f"Ты умный, добрый, краткий помощник для сайта soundmusic54.ru. Используй знания с сайта."},
-                {"role": "user", "content": f"{message_text}\n\nКонтент сайта:\n{site_data[:4000]}"}
-            ]
-        }
+def ask_deepseek(q):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    sec = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k, v in site_contents.items() if k in ("base","faq","plan","way"))
+    sys_p = ("Ты — помощник SoundMusic, опирайся на сайт. "
+             "Если нет точной информации — честно скажи об этом.\n" + sec)
+    payload = {"model": "tngtech/deepseek-r1t2-chimera:free",
+               "messages":[{"role":"system","content":sys_p},{"role":"user","content":q}],
+               "max_tokens":800, "temperature":0.7}
+    for model in [
+        "tngtech/deepseek-r1t2-chimera:free",
+        "togethercomputer/stripedhyena-hessian:free",
+        "mistralai/mistral-7b-instruct:free"
+    ]:
+        payload["model"] = model
         try:
-            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=json_data, timeout=20)
-            r.raise_for_status()
-            response = r.json()
-            return response["choices"][0]["message"]["content"]
+            r = requests.post(url, headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=20)
+            if r.status_code == 200:
+                d = r.json()
+                txt = d.get("choices",[{}])[0].get("message",{}).get("content","").strip()
+                return txt or "⚠️ Пустой ответ."
+            if r.status_code in (400,429):
+                print(f"❌ Модель {model} вернула {r.status_code}, пробуем следующую")
+                continue
         except Exception as e:
-            print(f"❌ Ошибка модели {model}: {e}")
-    return "⚠️ Ошибка сервиса. Попробуй позже."
+            print(f"❌ Ошибка {model}: {e}")
+    return "⚠️ Все модели недоступны, попробуйте позже."
 
-@bot.message_handler(commands=["start", "help"])
-def send_welcome(message):
-    bot.send_message(message.chat.id, "👋 Привет! Задай мне вопрос по сайту https://soundmusic54.ru")
+def fmt_md(text):
+    t = text.replace("__","*").replace("**","*")
+    return re.sub(r'<br\s*/?>','\n',t,flags=re.I)
+
+@bot.message_handler(commands=['start','help'])
+def cmd_start(m):
+    bot.send_message(m.chat.id, "Привет! Я — помощник SoundMusic. Задавай вопросы!")
 
 @bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    bot.send_chat_action(message.chat.id, 'typing')
+def msg(m):
+    q = m.text.strip()
+    if not q:
+        bot.send_message(m.chat.id, "Пожалуйста, задай вопрос.")
+        return
+    bot.send_chat_action(m.chat.id, 'typing')
+    a = ask_deepseek(q)
+    a = fmt_md(a)
+    for i in range(0, len(a), 4000):
+        bot.send_message(m.chat.id, a[i:i+4000], parse_mode="Markdown")
+
+def check_conflict():
     try:
-        response = ask_openrouter(message.text)
-        bot.send_message(message.chat.id, response)
-    except Exception as e:
-        print(f"❌ Ошибка в обработке сообщения: {e}")
-        bot.send_message(message.chat.id, "⚠️ Что-то пошло не так...")
-
-# Flask-заглушка для Railway health-check
-from flask import Flask
-app = Flask(__name__)
-
-@app.route('/')
-@app.route('/health')
-def health():
-    return "ok", 200
+        bot.get_updates(offset=-1, timeout=1)
+    except telebot.apihelper.ApiTelegramException as e:
+        if "409" in str(e):
+            print("❗ Уже запущен другой бот → 409 Conflict. Выход.")
+            sys.exit(0)
+        else:
+            raise
 
 if __name__ == "__main__":
+    check_conflict()
     load_site()
     print("🚀 Бот запущен!")
-    from threading import Thread
-    Thread(target=lambda: bot.infinity_polling(timeout=60, long_polling_timeout=10)).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    bot.infinity_polling()
