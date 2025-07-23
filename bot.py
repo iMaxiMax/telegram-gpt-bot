@@ -2,8 +2,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import json
-import re
+import html
 
 # --- Настройки ---
 
@@ -21,14 +20,14 @@ HEADERS = {
 BASE_URL = "https://soundmusic54.ru"
 PATHS = [
     "",              # основа
-    "production",
-    "fingerstyle",
-    "electricguitar",
-    "shop",
-    "top",
-    "way",
-    "plan",
-    "faq"
+    "production",    # продакшн
+    "fingerstyle",   # фингерстайл
+    "electricguitar",# электруха
+    "shop",          # магазин сша
+    "top",           # рейтинг учеников
+    "way",           # дорожная карта обучения
+    "plan",          # стратегия обучения
+    "faq"            # FAQ
 ]
 
 # --- Загрузка и подготовка сайта ---
@@ -49,16 +48,17 @@ def load_site():
     for path in PATHS:
         url = f"{BASE_URL}/{path}" if path else BASE_URL
         print(f"Загружаю {url}...")
-        html = fetch_page(url)
-        if html:
-            soup = BeautifulSoup(html, "html.parser")
+        html_content = fetch_page(url)
+        if html_content:
+            soup = BeautifulSoup(html_content, "html.parser")
+            # Сохраняем чистый текст страницы
             text = soup.get_text(separator="\n", strip=True)
             site_contents[path or "base"] = text
         else:
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
 
-# --- Запрос к OpenRouter ---
+# --- Функция запроса к OpenRouter DeepSeek ---
 
 def ask_deepseek(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -67,8 +67,9 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
+    # Уменьшаем длину текста для system prompt до 400 символов на раздел
     site_summary = "\n\n".join(
-        f"Раздел '{key}': {val[:800]}"
+        f"Раздел '{key}': {val[:400]}"
         for key, val in site_contents.items()
     )
 
@@ -89,12 +90,14 @@ def ask_deepseek(question: str) -> str:
                 "content": question
             }
         ],
-        "max_tokens": 300,
+        "max_tokens": 500,
         "temperature": 0.7
     }
 
     try:
         resp = requests.post(url, headers=headers, json=payload)
+        print(f"[OpenRouter status]: {resp.status_code}")
+        print(f"[OpenRouter response]: {resp.text}")
         resp.raise_for_status()
         data = resp.json()
         answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -102,11 +105,6 @@ def ask_deepseek(question: str) -> str:
     except Exception as e:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
-
-# --- Markdown → HTML безопасный вывод ---
-
-def strip_markdown(text):
-    return re.sub(r'[*_~`]+', '', text)
 
 # --- Обработка сообщений Telegram ---
 
@@ -127,7 +125,10 @@ def handle_message(message):
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
 
-    safe_answer = strip_markdown(answer)
+    # Экранируем ответ для безопасной отправки в parse_mode HTML
+    safe_answer = html.escape(answer)
+
+    # Разбиваем ответ на части по 4096 символов (лимит Telegram)
     max_len = 4096
     for i in range(0, len(safe_answer), max_len):
         bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="HTML")
