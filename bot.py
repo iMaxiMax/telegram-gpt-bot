@@ -41,7 +41,7 @@ def ask_gpt(question: str) -> str:
              "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
             {"role": "user", "content": question}
         ],
-        "max_tokens": 300,
+        "max_tokens": 5,
         "temperature": 0.7
     }
     resp = requests.post(
