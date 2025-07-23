@@ -9,14 +9,14 @@ from flask import Flask, request
 # --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # пример: https://worker-production-c8215.up.railway.app
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://worker-production-c8215.up.railway.app
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, как Gecko) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                    "Chrome/115.0 Safari/537.36")
 }
 
@@ -126,7 +126,7 @@ def handle_message(message):
     for i in range(0, len(safe_answer), max_len):
         bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
 
-# Webhook route для Telegram
+# Webhook endpoint для Telegram
 @app.route('/' + TELEGRAM_BOT_TOKEN, methods=['POST'])
 def webhook():
     json_string = request.get_data().decode('utf-8')
@@ -134,14 +134,14 @@ def webhook():
     bot.process_new_updates([update])
     return '', 200
 
-# Установка webhook при старте приложения
-@app.before_first_request
-def setup_webhook():
+if __name__ == "__main__":
+    load_site()
+    print("⚙️ Загрузка сайта завершена.")
+
+    # Установка webhook вручную при старте
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL + '/' + TELEGRAM_BOT_TOKEN)
     print(f"Webhook установлен на {WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}")
 
-if __name__ == "__main__":
-    load_site()
-    print("🚀 Бот запущен!")
+    # Запускаем Flask сервер
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
