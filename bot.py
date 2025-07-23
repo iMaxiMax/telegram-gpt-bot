@@ -2,6 +2,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
+import json
 import re
 
 # --- Настройки ---
@@ -18,8 +19,15 @@ HEADERS = {
 
 BASE_URL = "https://soundmusic54.ru"
 PATHS = [
-    "", "production", "fingerstyle", "electricguitar",
-    "shop", "top", "way", "plan", "faq"
+    "",              # основа
+    "production",
+    "fingerstyle",
+    "electricguitar",
+    "shop",
+    "top",
+    "way",
+    "plan",
+    "faq"
 ]
 
 site_contents = {}
@@ -54,15 +62,17 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
+    important_sections = ["base", "faq", "plan", "way"]
     site_summary = "\n\n".join(
         f"Раздел '{key}': {val[:800]}"
-        for key, val in site_contents.items()
+        for key, val in site_contents.items() if key in important_sections
     )
 
     system_prompt = (
-        "Ты — тёплый и дружелюбный помощник SoundMusic. "
-        "Отвечай кратко, по делу, только по информации с сайта soundmusic54.ru. "
-        "Не придумывай, если чего-то нет на сайте.\n"
+        "Ты — тёплый и дружелюбный помощник школы SoundMusic. "
+        "Помогай пользователю, опираясь на информацию с сайта. "
+        "Если точной информации нет — честно скажи об этом и предложи связаться с администратором или перейти на сайт. "
+        "Не выдумывай. Отвечай понятно и по делу.\n"
         f"Вот данные с сайта:\n{site_summary}"
     )
 
@@ -72,7 +82,7 @@ def ask_deepseek(question: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question}
         ],
-        "max_tokens": 600,
+        "max_tokens": 1000,
         "temperature": 0.7
     }
 
@@ -80,14 +90,15 @@ def ask_deepseek(question: str) -> str:
         resp = requests.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         return answer or "⚠️ Пустой ответ от сервиса."
     except Exception as e:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
 def format_bold_markdown(text: str) -> str:
-    text = text.replace("__", "**")
+    # Заменяем __текст__ и **текст** на *текст* для Telegram Markdown
+    text = text.replace("__", "*").replace("**", "*")
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     return text
 
@@ -99,8 +110,8 @@ def send_welcome(message):
     )
     bot.send_message(message.chat.id, welcome_text)
 
-@bot.message_handler(func=lambda m: m.chat.type == 'private')
-def handle_private_message(message):
+@bot.message_handler(func=lambda m: True)
+def handle_message(message):
     question = message.text.strip()
     if not question:
         bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
