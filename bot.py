@@ -1,126 +1,100 @@
 import os
 import requests
-from bs4 import BeautifulSoup
 import telebot
-import json
-import re
-import time
+from bs4 import BeautifulSoup
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/115.0 Safari/537.36"
-}
+# Стабильные бесплатные модели
+MODEL_LIST = [
+    "openchat/openchat-7b:free",
+    "mistralai/mistral-7b-instruct:free",
+    "turing/turing-mixtral-8x7b:free",
+    "tngtech/deepseek-r1t2-chimera:free"
+]
 
-BASE_URL = "https://soundmusic54.ru"
-PATHS = ["", "production", "fingerstyle", "electricguitar", "shop", "top", "way", "plan", "faq"]
+# Сайт, который парсим
+SITE_URLS = [
+    "https://soundmusic54.ru",
+    "https://soundmusic54.ru/production",
+    "https://soundmusic54.ru/fingerstyle",
+    "https://soundmusic54.ru/electricguitar",
+    "https://soundmusic54.ru/shop",
+    "https://soundmusic54.ru/top",
+    "https://soundmusic54.ru/way",
+    "https://soundmusic54.ru/plan",
+    "https://soundmusic54.ru/faq",
+]
 
-site_contents = {}
-
-def fetch_page(url):
-    try:
-        resp = requests.get(url, headers=HEADERS)
-        resp.raise_for_status()
-        return resp.text
-    except Exception as e:
-        print(f"Ошибка при загрузке {url}: {e}")
-        return None
+site_data = ""
 
 def load_site():
+    global site_data
     print("⚙️ Загружаю страницы сайта...")
-    for path in PATHS:
-        url = f"{BASE_URL}/{path}" if path else BASE_URL
+    text_blocks = []
+    for url in SITE_URLS:
         print(f"Загружаю {url}...")
-        html = fetch_page(url)
-        if html:
-            soup = BeautifulSoup(html, "html.parser")
-            text = soup.get_text(separator="\n", strip=True)
-            site_contents[path or "base"] = text
-        else:
-            site_contents[path or "base"] = ""
-    print("✅ Загрузка сайта завершена.")
-
-def ask_openrouter(question: str) -> str:
-    models = [
-        "togethercomputer/stripedhyena-hessian:free",
-        "togethercomputer/llama-3-70b-chat:free",
-        "mistralai/mistral-7b-instruct:free",
-        "tngtech/deepseek-r1t2-chimera:free"
-    ]
-
-    important_sections = ["base", "faq", "plan", "way"]
-    site_summary = "\n\n".join(
-        f"Раздел '{key}': {val[:800]}" for key, val in site_contents.items() if key in important_sections
-    )
-
-    system_prompt = (
-        "Ты — тёплый и дружелюбный помощник школы SoundMusic. "
-        "Если вопрос про обучение, гитару или школу — используй сайт. "
-        "Если сайт не даёт ответа, говори честно и не выдумывай."
-        f"\nВот данные с сайта:\n{site_summary}"
-    )
-
-    for model in models:
-        print(f"🔄 Пробую модель: {model}")
         try:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": question}
-                ],
-                "max_tokens": 1000,
-                "temperature": 0.7
-            }
+            resp = requests.get(url, timeout=10)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            text = soup.get_text(separator=' ', strip=True)
+            text_blocks.append(text)
+        except Exception as e:
+            print(f"❌ Ошибка при загрузке {url}: {e}")
+    site_data = "\n".join(text_blocks)
+    print("✅ Загрузка сайта завершена.\n")
 
-            resp = requests.post(url, headers=headers, json=payload, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-            answer = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            if answer:
-                return answer
+def ask_openrouter(message_text):
+    for model in MODEL_LIST:
+        print(f"🔄 Пробую модель: {model}")
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        json_data = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": f"Ты умный, добрый, краткий помощник для сайта soundmusic54.ru. Используй знания с сайта."},
+                {"role": "user", "content": f"{message_text}\n\nКонтент сайта:\n{site_data[:4000]}"}
+            ]
+        }
+        try:
+            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=json_data, timeout=20)
+            r.raise_for_status()
+            response = r.json()
+            return response["choices"][0]["message"]["content"]
         except Exception as e:
             print(f"❌ Ошибка модели {model}: {e}")
-            time.sleep(1)
-            continue
+    return "⚠️ Ошибка сервиса. Попробуй позже."
 
-    return "⚠️ Все сервисы временно недоступны. Попробуй позже."
-
-def format_bold_markdown(text: str) -> str:
-    text = text.replace("__", "*").replace("**", "*")
-    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-    return text
-
-@bot.message_handler(commands=['start', 'help'])
+@bot.message_handler(commands=["start", "help"])
 def send_welcome(message):
-    welcome_text = (
-        "Привет! Я помощник школы гитары SoundMusic 🎸\n"
-        "Задавай вопросы про курсы, обучение или гитару — я постараюсь помочь!"
-    )
-    bot.send_message(message.chat.id, welcome_text)
+    bot.send_message(message.chat.id, "👋 Привет! Задай мне вопрос по сайту https://soundmusic54.ru")
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    question = message.text.strip()
-    if not question:
-        bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
-        return
     bot.send_chat_action(message.chat.id, 'typing')
-    answer = ask_openrouter(question)
-    safe_answer = format_bold_markdown(answer)
-    max_len = 4096
-    for i in range(0, len(safe_answer), max_len):
-        bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
+    try:
+        response = ask_openrouter(message.text)
+        bot.send_message(message.chat.id, response)
+    except Exception as e:
+        print(f"❌ Ошибка в обработке сообщения: {e}")
+        bot.send_message(message.chat.id, "⚠️ Что-то пошло не так...")
+
+# Flask-заглушка для Railway health-check
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/')
+@app.route('/health')
+def health():
+    return "ok", 200
 
 if __name__ == "__main__":
     load_site()
     print("🚀 Бот запущен!")
-    bot.polling(none_stop=True)
+    from threading import Thread
+    Thread(target=lambda: bot.infinity_polling(timeout=60, long_polling_timeout=10)).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
