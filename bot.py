@@ -2,7 +2,8 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import html
+import json
+import re
 
 # --- Настройки ---
 
@@ -20,14 +21,14 @@ HEADERS = {
 BASE_URL = "https://soundmusic54.ru"
 PATHS = [
     "",              # основа
-    "production",    # продакшн
-    "fingerstyle",   # фингерстайл
-    "electricguitar",# электруха
-    "shop",          # магазин сша
-    "top",           # рейтинг учеников
-    "way",           # дорожная карта обучения
-    "plan",          # стратегия обучения
-    "faq"            # FAQ
+    "production",
+    "fingerstyle",
+    "electricguitar",
+    "shop",
+    "top",
+    "way",
+    "plan",
+    "faq"
 ]
 
 # --- Загрузка и подготовка сайта ---
@@ -48,16 +49,16 @@ def load_site():
     for path in PATHS:
         url = f"{BASE_URL}/{path}" if path else BASE_URL
         print(f"Загружаю {url}...")
-        html_data = fetch_page(url)
-        if html_data:
-            soup = BeautifulSoup(html_data, "html.parser")
+        html = fetch_page(url)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
             text = soup.get_text(separator="\n", strip=True)
             site_contents[path or "base"] = text
         else:
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
 
-# --- Запрос к OpenRouter DeepSeek ---
+# --- Запрос к OpenRouter ---
 
 def ask_deepseek(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -77,10 +78,10 @@ def ask_deepseek(question: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "Ты — тёплый и дружелюбный помощник SoundMusic. "
-                    "Используй информацию с сайта soundmusic54.ru, "
-                    "не придумывай лишнего и говори по делу, понятно и доброжелательно.\n\n"
-                    f"Вот выдержки с сайта:\n{site_summary}"
+                    "Ты — тёплый и дружелюбный помощник SoundMusic, "
+                    "используй информацию с сайта для ответов, "
+                    "не придумывай лишнего, отвечай понятно и подробно.\n"
+                    f"Вот данные с сайта:\n{site_summary}"
                 )
             },
             {
@@ -88,7 +89,7 @@ def ask_deepseek(question: str) -> str:
                 "content": question
             }
         ],
-        "max_tokens": 800,
+        "max_tokens": 300,
         "temperature": 0.7
     }
 
@@ -102,13 +103,18 @@ def ask_deepseek(question: str) -> str:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
-# --- Telegram Обработка ---
+# --- Markdown → HTML безопасный вывод ---
+
+def strip_markdown(text):
+    return re.sub(r'[*_~`]+', '', text)
+
+# --- Обработка сообщений Telegram ---
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
         "Привет! Я помощник SoundMusic. "
-        "Задавай вопросы про курсы, обучение и всё, что связано с сайтом https://soundmusic54.ru"
+        "Задавай вопросы про курсы, обучение и всё, что связано с сайтом soundmusic54.ru."
     )
     bot.send_message(message.chat.id, welcome_text)
 
@@ -118,18 +124,10 @@ def handle_message(message):
     if not question:
         bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
         return
-
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
 
-    # Экранируем HTML, затем возвращаем разрешённые теги
-    safe_answer = html.escape(answer)
-    safe_answer = safe_answer.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
-    safe_answer = safe_answer.replace("&lt;i&gt;", "<i>").replace("&lt;/i&gt;", "</i>")
-    safe_answer = safe_answer.replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>")
-    safe_answer = safe_answer.replace("&lt;a href=", "<a href=").replace("&gt;", ">")
-
-    # Разбиваем на части, если длинный
+    safe_answer = strip_markdown(answer)
     max_len = 4096
     for i in range(0, len(safe_answer), max_len):
         bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="HTML")
