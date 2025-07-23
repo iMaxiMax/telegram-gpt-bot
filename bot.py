@@ -2,7 +2,6 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import html
 
 # --- Настройки ---
 
@@ -20,17 +19,15 @@ HEADERS = {
 BASE_URL = "https://soundmusic54.ru"
 PATHS = [
     "",              # основа
-    "production",    # продакшн
-    "fingerstyle",   # фингерстайл
-    "electricguitar",# электруха
-    "shop",          # магазин сша
-    "top",           # рейтинг учеников
-    "way",           # дорожная карта обучения
-    "plan",          # стратегия обучения
-    "faq"            # FAQ
+    "production",
+    "fingerstyle",
+    "electricguitar",
+    "shop",
+    "top",
+    "way",
+    "plan",
+    "faq"
 ]
-
-# --- Загрузка и подготовка сайта ---
 
 site_contents = {}
 
@@ -48,17 +45,21 @@ def load_site():
     for path in PATHS:
         url = f"{BASE_URL}/{path}" if path else BASE_URL
         print(f"Загружаю {url}...")
-        html_content = fetch_page(url)
-        if html_content:
-            soup = BeautifulSoup(html_content, "html.parser")
-            # Сохраняем чистый текст страницы
+        html = fetch_page(url)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
             text = soup.get_text(separator="\n", strip=True)
             site_contents[path or "base"] = text
         else:
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
 
-# --- Функция запроса к OpenRouter DeepSeek ---
+def sanitize_markdown(text):
+    # Экранируем символы, которые могут ломать Markdown в Telegram (если понадобится)
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    for ch in escape_chars:
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
 def ask_deepseek(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -67,9 +68,8 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
-    # Уменьшаем длину текста для system prompt до 400 символов на раздел
     site_summary = "\n\n".join(
-        f"Раздел '{key}': {val[:400]}"
+        f"Раздел '{key}': {val[:800]}"
         for key, val in site_contents.items()
     )
 
@@ -90,23 +90,22 @@ def ask_deepseek(question: str) -> str:
                 "content": question
             }
         ],
-        "max_tokens": 500,
+        "max_tokens": 300,
         "temperature": 0.7
     }
 
     try:
         resp = requests.post(url, headers=headers, json=payload)
-        print(f"[OpenRouter status]: {resp.status_code}")
-        print(f"[OpenRouter response]: {resp.text}")
         resp.raise_for_status()
         data = resp.json()
         answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return answer or "⚠️ Пустой ответ от сервиса."
+        if not answer:
+            return "⚠️ Пустой ответ от сервиса."
+        # Не экранируем полностью, т.к. у нас есть Markdown-разметка с **
+        return answer
     except Exception as e:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
-
-# --- Обработка сообщений Telegram ---
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -114,26 +113,19 @@ def send_welcome(message):
         "Привет! Я помощник SoundMusic. "
         "Задавай вопросы про курсы, обучение и всё, что связано с сайтом soundmusic54.ru."
     )
-    bot.send_message(message.chat.id, welcome_text)
+    bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     question = message.text.strip()
     if not question:
-        bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
+        bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.", parse_mode="Markdown")
         return
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
-
-    # Экранируем ответ для безопасной отправки в parse_mode HTML
-    safe_answer = html.escape(answer)
-
-    # Разбиваем ответ на части по 4096 символов (лимит Telegram)
     max_len = 4096
-    for i in range(0, len(safe_answer), max_len):
-        bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="HTML")
-
-# --- Запуск ---
+    for i in range(0, len(answer), max_len):
+        bot.send_message(message.chat.id, answer[i:i+max_len], parse_mode="Markdown")
 
 if __name__ == "__main__":
     load_site()
