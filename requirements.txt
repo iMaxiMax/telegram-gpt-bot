@@ -1,3 +1,2 @@
-pyTelegramBotAPI
-requests
-openrouter
+pyTelegramBotAPI==4.7.0
+openrouter-sdk==0.0.6
