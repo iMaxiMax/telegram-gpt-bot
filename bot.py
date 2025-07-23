@@ -1,7 +1,7 @@
 import os
 import telebot
 from telebot import types
-import requests
+from openrouter_sdk import OpenRouter
 
 # Получаем токены из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -12,7 +12,10 @@ if not TOKEN or not OPENROUTER_API_KEY:
 
 bot = telebot.TeleBot(TOKEN)
 
-# Главное меню
+# Инициализация клиента OpenRouter
+client = OpenRouter(api_key=OPENROUTER_API_KEY)
+
+# Главное меню с кнопками
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("🎓 О школе", "💰 Цены")
@@ -20,7 +23,6 @@ def main_menu():
     markup.row("🎯 Цели и результат")
     return markup
 
-# Обработка команды /start
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.send_message(
@@ -29,59 +31,52 @@ def send_welcome(message):
         reply_markup=main_menu()
     )
 
-# Запрос к OpenRouter (Zephyr-7B)
-def ask_openrouter(prompt):
+def ask_openrouter(question):
     try:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "model": "huggingfaceh4/zephyr-7b-beta",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. "
-                        "Отвечай понятно, по-человечески и без давления. Если можно — с заботой и ссылкой на soundmusic54.ru."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        }
-
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
-        result = response.json()
-
-        return result["choices"][0]["message"]["content"]
-
+        response = client.chat.completions.create(
+            model="huggingfaceh4/zephyr-7b-beta",
+            messages=[
+                {"role": "system", "content": (
+                    "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. "
+                    "Отвечай коротко, по делу, дружелюбно и понятно для всех возрастов."
+                )},
+                {"role": "user", "content": question}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        print("OpenRouter response:", response)
+        # Пытаемся получить текст из разных вариантов структуры ответа:
+        if 'choices' in response:
+            return response['choices'][0]['message']['content']
+        elif 'completion' in response:
+            return response['completion']
+        elif isinstance(response, dict) and 'text' in response:
+            return response['text']
+        else:
+            return "Извините, я не смог обработать ответ."
     except Exception as e:
         print("Ошибка OpenRouter:", e)
-        return "⚠️ Что-то пошло не так. Попробуй ещё раз позже."
+        return "⚠️ Что-то пошло не так. Попробуй ещё раз чуть позже."
 
-# Обработка всех сообщений
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     text = message.text.strip()
 
     if text == "🎓 О школе":
-        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары SoundMusic. Индивидуально, по шагам, с удовольствием. Подробнее: https://soundmusic54.ru/#menu")
+        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары soundmusic, обучаем с нуля и не только. Индивидуально, по шагам, с удовольствием. Подробнее: https://soundmusic54.ru/#menu")
     elif text == "💰 Цены":
-        bot.send_message(message.chat.id, "💰 Актуальные цены тут:\nhttps://soundmusic54.ru/#price")
+        bot.send_message(message.chat.id, "💰 Актуальные цены на обучение тут:\nhttps://soundmusic54.ru/#price")
     elif text == "📝 Как записаться":
         bot.send_message(message.chat.id, "📝 Просто оставь заявку на сайте:\nhttps://soundmusic54.ru/#sign\nИли напиши сюда, и мы поможем.")
     elif text == "🥇 Уровни учеников":
-        bot.send_message(message.chat.id, "🥇 У нас учатся и новички, и профи. Подробнее: https://soundmusic54.ru/top")
+        bot.send_message(message.chat.id, "🥇 У нас учатся и новички, и профи. Программа подстраивается под твой уровень: https://soundmusic54.ru/top")
     elif text == "🎯 Цели и результат":
-        bot.send_message(message.chat.id, "🎯 Мы помогаем достигать цели — играть, писать музыку, выступать: https://soundmusic54.ru/production")
+        bot.send_message(message.chat.id, "🎯 Мы помогаем достичь твоей цели: научиться играть, писать музыку или выступать: https://soundmusic54.ru/production")
     else:
         bot.send_chat_action(message.chat.id, 'typing')
-        reply = ask_openrouter(text)
-        bot.send_message(message.chat.id, reply)
+        answer = ask_openrouter(text)
+        bot.send_message(message.chat.id, answer)
 
 print("Бот с OpenRouter (Zephyr-7B-beta) запущен!")
 bot.polling()
