@@ -3,10 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 import telebot
 import re
-import time
 
 # --- Настройки ---
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -49,50 +47,24 @@ def load_site():
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
 
-def is_general_music_question(question: str) -> bool:
-    keywords = [
-        "из чего состоит гитара",
-        "как играть на гитаре",
-        "что такое аккорд",
-        "музыкальная теория",
-        "как настроить гитару",
-        "гитарные техники",
-        "фингерстайл",
-        "музыка",
-        "рок",
-        "блюз",
-        "акустическая гитара",
-        "электрогитара",
-        "тонкости игры",
-        "техника исполнения",
-        "как выбрать гитару"
-    ]
-    q = question.lower()
-    return any(k in q for k in keywords)
-
-def ask_deepseek(question: str, retry=3) -> str:
+def ask_deepseek(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    if is_general_music_question(question):
-        system_prompt = (
-            "Ты — дружелюбный и компетентный помощник по музыке и гитаре. "
-            "Отвечай полно, понятно и интересно."
-        )
-    else:
-        site_summary = "\n\n".join(
-            f"Раздел '{key}': {val[:800]}"
-            for key, val in site_contents.items()
-        )
-        system_prompt = (
-            "Ты — тёплый и дружелюбный помощник SoundMusic. "
-            "Отвечай кратко, по делу, только по информации с сайта soundmusic54.ru. "
-            "Не придумывай, если чего-то нет на сайте.\n"
-            f"Вот данные с сайта:\n{site_summary}"
-        )
+    site_summary = "\n\n".join(
+        f"Раздел '{key}': {val[:800]}"
+        for key, val in site_contents.items()
+    )
+
+    system_prompt = (
+        "Ты — тёплый и дружелюбный помощник SoundMusic. "
+        "Отвечай кратко, по делу, только по информации с сайта soundmusic54.ru. "
+        "Не придумывай, если чего-то нет на сайте.\n"
+        f"Вот данные с сайта:\n{site_summary}"
+    )
 
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
@@ -104,25 +76,15 @@ def ask_deepseek(question: str, retry=3) -> str:
         "temperature": 0.7
     }
 
-    for attempt in range(retry):
-        try:
-            resp = requests.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            return answer or "⚠️ Пустой ответ от сервиса."
-        except requests.exceptions.HTTPError as e:
-            if resp.status_code == 429:
-                wait_time = (2 ** attempt) * 2
-                print(f"429 Too Many Requests — жду {wait_time} секунд и пробую снова...")
-                time.sleep(wait_time)
-            else:
-                print("❌ Ошибка запроса к OpenRouter:", str(e))
-                break
-        except Exception as e:
-            print("❌ Ошибка запроса к OpenRouter:", str(e))
-            break
-    return "⚠️ Ошибка сервиса. Попробуй позже."
+    try:
+        resp = requests.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return answer or "⚠️ Пустой ответ от сервиса."
+    except Exception as e:
+        print("❌ Ошибка запроса к OpenRouter:", str(e))
+        return "⚠️ Ошибка сервиса. Попробуй позже."
 
 def format_bold_markdown(text: str) -> str:
     text = text.replace("__", "**")
