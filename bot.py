@@ -34,14 +34,16 @@ def ask_gpt(question: str) -> str:
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-   payload = {
-    "model": "tngtech/deepseek-r1t2-chimera:free",
-    "messages": [
-        {"role": "system", "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
-        {"role": "user", "content": question}
-    ],
-    "max_tokens": 100,
-    "temperature": 0.7
+
+    payload = {
+        "model": "tngtech/deepseek-r1t2-chimera:free",
+        "messages": [
+            {"role": "system",
+             "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
+            {"role": "user", "content": question}
+        ],
+        "max_tokens": 100,
+        "temperature": 0.7
     }
 
     resp = requests.post(
@@ -49,11 +51,13 @@ def ask_gpt(question: str) -> str:
         headers=headers,
         json=payload
     )
+
     if resp.ok:
         return resp.json()["choices"][0]["message"]["content"]
     else:
         print("Ошибка OpenRouter:", resp.status_code, resp.text)
         return "⚠️ Ошибка сервиса. Попробуй позже."
+
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
