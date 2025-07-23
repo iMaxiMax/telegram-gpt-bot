@@ -42,8 +42,7 @@ def ask_gpt(question: str) -> str:
     ],
     "max_tokens": 100,
     "temperature": 0.7
-}
-
+    }
 
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
