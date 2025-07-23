@@ -1,3 +1,2 @@
 pyTelegramBotAPI==4.7.0
-openrouter-sdk
-python-dotenv
+requests
