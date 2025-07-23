@@ -35,7 +35,7 @@ def ask_gpt(question: str) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openchat/openchat-3.5:free",
+        model="openchat/openchat-3.5-0106:free",
         "messages": [
             {"role": "system",
              "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
