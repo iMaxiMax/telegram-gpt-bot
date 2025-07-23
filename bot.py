@@ -2,7 +2,6 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import json
 import html
 
 # --- Настройки ---
@@ -79,8 +78,9 @@ def ask_deepseek(question: str) -> str:
                 "role": "system",
                 "content": (
                     "Ты — тёплый и дружелюбный помощник SoundMusic. "
-                    "Используй данные с сайта в ответах. Отвечай ясно, полезно, без лишней фантазии.\n"
-                    f"Вот данные с сайта:\n{site_summary}"
+                    "Используй информацию с сайта soundmusic54.ru, "
+                    "не придумывай лишнего и говори по делу, понятно и доброжелательно.\n\n"
+                    f"Вот выдержки с сайта:\n{site_summary}"
                 )
             },
             {
@@ -88,7 +88,7 @@ def ask_deepseek(question: str) -> str:
                 "content": question
             }
         ],
-        "max_tokens": 300,
+        "max_tokens": 800,
         "temperature": 0.7
     }
 
@@ -96,20 +96,19 @@ def ask_deepseek(question: str) -> str:
         resp = requests.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return message.strip() or "⚠️ Пустой ответ от сервиса."
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return answer or "⚠️ Пустой ответ от сервиса."
     except Exception as e:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
-# --- Обработка сообщений Telegram ---
+# --- Telegram Обработка ---
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "Привет! Я помощник SoundMusic 🎸\n\n"
-        "Задай вопрос — и я подскажу информацию из сайта soundmusic54.ru: "
-        "про обучение, курсы, цены и многое другое."
+        "Привет! Я помощник SoundMusic. "
+        "Задавай вопросы про курсы, обучение и всё, что связано с сайтом https://soundmusic54.ru"
     )
     bot.send_message(message.chat.id, welcome_text)
 
@@ -123,12 +122,14 @@ def handle_message(message):
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
 
-    # Подготовка текста в формате HTML
+    # Экранируем HTML, затем возвращаем разрешённые теги
     safe_answer = html.escape(answer)
-    safe_answer = safe_answer.replace("\n", "<br>")
-    safe_answer = safe_answer.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")  # поддержка **жирного** от OpenRouter
+    safe_answer = safe_answer.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
     safe_answer = safe_answer.replace("&lt;i&gt;", "<i>").replace("&lt;/i&gt;", "</i>")
+    safe_answer = safe_answer.replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>")
+    safe_answer = safe_answer.replace("&lt;a href=", "<a href=").replace("&gt;", ">")
 
+    # Разбиваем на части, если длинный
     max_len = 4096
     for i in range(0, len(safe_answer), max_len):
         bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="HTML")
