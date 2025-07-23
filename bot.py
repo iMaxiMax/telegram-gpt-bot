@@ -9,6 +9,9 @@ import json
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
+    raise Exception("Пожалуйста, установите TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY в переменные окружения")
+
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 HEADERS = {
@@ -51,9 +54,9 @@ def load_site():
         html = fetch_page(url)
         if html:
             soup = BeautifulSoup(html, "html.parser")
-            # Для простоты сохраняем чистый текст страницы
             text = soup.get_text(separator="\n", strip=True)
-            site_contents[path or "base"] = text
+            # Ограничим длину текста для system prompt, например, 3000 символов, чтобы не перегружать запрос
+            site_contents[path or "base"] = text[:3000]
         else:
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
@@ -67,9 +70,8 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
-    # Добавляем в system prompt краткую сводку с сайта, чтобы бот отвечал с учетом сайта
     site_summary = "\n\n".join(
-        f"Раздел '{key}': {val[:800]}"  # берем первые 800 символов для ограничения
+        f"Раздел '{key}': {val[:800]}"
         for key, val in site_contents.items()
     )
 
@@ -98,8 +100,9 @@ def ask_deepseek(question: str) -> str:
         resp = requests.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return answer or "⚠️ Пустой ответ от сервиса."
+        print("Ответ OpenRouter:", json.dumps(data, ensure_ascii=False, indent=2))  # Лог ответа
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        return answer if answer else "⚠️ Пустой ответ от сервиса."
     except Exception as e:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
@@ -122,7 +125,6 @@ def handle_message(message):
         return
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
-    # Разбиваем ответ на части по 4096 символов (лимит Telegram)
     max_len = 4096
     for i in range(0, len(answer), max_len):
         bot.send_message(message.chat.id, answer[i:i+max_len])
