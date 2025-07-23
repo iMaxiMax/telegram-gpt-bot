@@ -49,7 +49,7 @@ def load_site():
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
 
-def ask_deepseek(question: str) -> str:
+def ask_deepseek_with_site_context(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -66,6 +66,39 @@ def ask_deepseek(question: str) -> str:
         "Отвечай кратко, по делу, только по информации с сайта soundmusic54.ru. "
         "Не придумывай, если чего-то нет на сайте.\n"
         f"Вот данные с сайта:\n{site_summary}"
+    )
+
+    payload = {
+        "model": "tngtech/deepseek-r1t2-chimera:free",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question}
+        ],
+        "max_tokens": 600,
+        "temperature": 0.7
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return answer or "⚠️ Пустой ответ от сервиса."
+    except Exception as e:
+        print("❌ Ошибка запроса к OpenRouter:", str(e))
+        return "⚠️ Ошибка сервиса. Попробуй позже."
+
+def ask_deepseek_free(question: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    system_prompt = (
+        "Ты — дружелюбный и свободный помощник SoundMusic. "
+        "Отвечай на вопросы про музыку, гитару, обучение, музыкальное творчество просто и понятно. "
+        "Если вопрос не связан с сайтом — постарайся помочь."
     )
 
     payload = {
@@ -108,7 +141,7 @@ def handle_private_message(message):
         bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
         return
     bot.send_chat_action(message.chat.id, 'typing')
-    answer = ask_deepseek(question)
+    answer = ask_deepseek_with_site_context(question)
     safe_answer = format_bold_markdown(answer)
     max_len = 4096
     for i in range(0, len(safe_answer), max_len):
@@ -120,7 +153,7 @@ def handle_group_message(message):
         question = message.text.replace(f"@{bot.get_me().username}", "").strip()
         if question:
             bot.send_chat_action(message.chat.id, 'typing')
-            answer = ask_deepseek(question)
+            answer = ask_deepseek_free(question)
             safe_answer = format_bold_markdown(answer)
             max_len = 4096
             for i in range(0, len(safe_answer), max_len):
