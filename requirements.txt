@@ -1,2 +1,2 @@
 pyTelegramBotAPI==4.7.0
-openrouter>=0.1.0
+openrouter
