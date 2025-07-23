@@ -63,7 +63,6 @@ def ask_deepseek(question: str) -> str:
         "Content-Type": "application/json"
     }
 
-    # Краткая сводка с сайта (первые 800 символов каждого раздела)
     site_summary = "\n\n".join(
         f"Раздел '{key}': {val[:800]}"
         for key, val in site_contents.items()
@@ -96,14 +95,44 @@ def ask_deepseek(question: str) -> str:
         print("❌ Ошибка запроса к OpenRouter:", str(e))
         return "⚠️ Ошибка сервиса. Попробуй позже."
 
+def escape_markdown(text: str) -> str:
+    # Экранируем специальные символы MarkdownV2 Telegram, чтобы жирный текст работал корректно
+    # Telegram MarkdownV2 требует экранировать _ * [ ] ( ) ~ ` > # + - = | { } . !
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
 def format_bold_markdown(text: str) -> str:
-    # Заменяем двойные подчёркивания __текст__ на **текст** для Telegram Markdown
-    # Также можно дополнительно убрать HTML-теги <br> и прочее, если нужно:
-    text = text.replace("__", "**")
-    # Удаляем возможные <br> или заменяем на перенос строки
-    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-    # Можно добавить и другие замены или очистку по необходимости
-    return text
+    # Заменяем __текст__ на *текст* и потом экранируем все символы, кроме звездочек
+    # Для MarkdownV2 жирный текст — **текст**
+    # Но если мы не экранируем правильно — Telegram выдаст ошибку
+    # Логика:
+    # 1) заменим __текст__ на **текст**
+    # 2) потом экранируем все спецсимволы, кроме звездочек внутри ** **
+    # Для упрощения:
+    # - заменим __текст__ на **текст**
+    # - экранируем всё кроме звездочек (т.е. не экранируем сами **)
+    
+    # Сначала замена __текст__ на **текст**
+    text = re.sub(r'__(.+?)__', r'**\1**', text)
+
+    # Разобьём текст на куски между ** (жирным) и остальной текст
+    parts = re.split(r'(\*\*.*?\*\*)', text)
+    result = []
+    for part in parts:
+        if part.startswith("**") and part.endswith("**"):
+            # внутри жирного не экранируем звездочки, но экранируем остальное
+            inner = part[2:-2]
+            inner_escaped = escape_markdown(inner)
+            result.append(f"**{inner_escaped}**")
+        else:
+            # экранируем весь текст
+            result.append(escape_markdown(part))
+    return "".join(result)
+
+def send_long_message(bot, chat_id, text, parse_mode=None):
+    max_len = 4000
+    for i in range(0, len(text), max_len):
+        bot.send_message(chat_id, text[i:i+max_len], parse_mode=parse_mode)
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -122,9 +151,7 @@ def handle_message(message):
     bot.send_chat_action(message.chat.id, 'typing')
     answer = ask_deepseek(question)
     safe_answer = format_bold_markdown(answer)
-    max_len = 4096
-    for i in range(0, len(safe_answer), max_len):
-        bot.send_message(message.chat.id, safe_answer[i:i+max_len], parse_mode="Markdown")
+    send_long_message(bot, message.chat.id, safe_answer, parse_mode="MarkdownV2")
 
 if __name__ == "__main__":
     load_site()
