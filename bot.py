@@ -2,7 +2,6 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import json
 import re
 import time
 
@@ -50,6 +49,27 @@ def load_site():
             site_contents[path or "base"] = ""
     print("✅ Загрузка сайта завершена.")
 
+def is_general_music_question(question: str) -> bool:
+    keywords = [
+        "из чего состоит гитара",
+        "как играть на гитаре",
+        "что такое аккорд",
+        "музыкальная теория",
+        "как настроить гитару",
+        "гитарные техники",
+        "фингерстайл",
+        "музыка",
+        "рок",
+        "блюз",
+        "акустическая гитара",
+        "электрогитара",
+        "тонкости игры",
+        "техника исполнения",
+        "как выбрать гитару"
+    ]
+    q = question.lower()
+    return any(k in q for k in keywords)
+
 def ask_deepseek(question: str, retry=3) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -57,17 +77,22 @@ def ask_deepseek(question: str, retry=3) -> str:
         "Content-Type": "application/json"
     }
 
-    site_summary = "\n\n".join(
-        f"Раздел '{key}': {val[:800]}"
-        for key, val in site_contents.items()
-    )
-
-    system_prompt = (
-        "Ты — тёплый и дружелюбный помощник SoundMusic. "
-        "Отвечай кратко, по делу, только по информации с сайта soundmusic54.ru. "
-        "Не придумывай, если чего-то нет на сайте.\n"
-        f"Вот данные с сайта:\n{site_summary}"
-    )
+    if is_general_music_question(question):
+        system_prompt = (
+            "Ты — дружелюбный и компетентный помощник по музыке и гитаре. "
+            "Отвечай полно, понятно и интересно."
+        )
+    else:
+        site_summary = "\n\n".join(
+            f"Раздел '{key}': {val[:800]}"
+            for key, val in site_contents.items()
+        )
+        system_prompt = (
+            "Ты — тёплый и дружелюбный помощник SoundMusic. "
+            "Отвечай кратко, по делу, только по информации с сайта soundmusic54.ru. "
+            "Не придумывай, если чего-то нет на сайте.\n"
+            f"Вот данные с сайта:\n{site_summary}"
+        )
 
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
