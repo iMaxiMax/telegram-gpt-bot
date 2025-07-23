@@ -4,10 +4,12 @@ import requests
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 def ask_gpt(question: str) -> str:
+    if not OPENROUTER_API_KEY:
+        return "⚠️ API-ключ OpenRouter не найден."
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        # Можно добавить для рейтинга, если хочешь
         # "HTTP-Referer": "https://soundmusic54.ru",
         # "X-Title": "SoundMusic Bot"
     }
@@ -15,7 +17,7 @@ def ask_gpt(question: str) -> str:
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role": "system", "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
+            {"role": "system", "content": "Ты — тёплый, честный помощник экспресс-школы гитары SoundMusic. Отвечай понятно и доброжелательно."},
             {"role": "user", "content": question}
         ],
         "max_tokens": 100,
@@ -23,11 +25,7 @@ def ask_gpt(question: str) -> str:
     }
 
     try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload
-        )
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
 
         if response.ok:
             data = response.json()
