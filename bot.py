@@ -1,19 +1,19 @@
 import os
 import telebot
 from telebot import types
-from openrouter import OpenRouter
+import requests
+from dotenv import load_dotenv
 
-# Получаем ключи из переменных окружения
+load_dotenv()
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 if not TOKEN or not OPENROUTER_API_KEY:
-    raise ValueError("❌ Переменные окружения не заданы! Проверь TELEGRAM_TOKEN и OPENROUTER_API_KEY.")
+    raise ValueError("❌ TELEGRAM_TOKEN или OPENROUTER_API_KEY не заданы!")
 
 bot = telebot.TeleBot(TOKEN)
-client = OpenRouter(api_key=OPENROUTER_API_KEY)
 
-# Главное меню
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("🎓 О школе", "💰 Цены")
@@ -21,60 +21,55 @@ def main_menu():
     markup.row("🎯 Цели и результат")
     return markup
 
-# Ответ на /start
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.send_message(
         message.chat.id,
-        "Привет! 👋 Я — навигатор экспресс-школы гитары SOUNDMUSIC.\n\nВыбери интересующий пункт:",
+        "Привет! 👋 Я — навигатор экспресс-школы гитары SOUNDMUSIC.\n\nВыбери пункт:",
         reply_markup=main_menu()
     )
 
-# GPT-ответ через OpenRouter
-def ask_gpt(question):
-    try:
-        response = client.chat.completions.create(
-            model="openrouter/openchat",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты — честный, тёплый и внимательный помощник школы гитары SoundMusic из Новосибирска. "
-                        "Ты отвечаешь по делу, с заботой, без давления, дружелюбно и по-человечески."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": question
-                }
-            ],
-            max_tokens=5,
-            temperature=0.7
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print("Ошибка OpenRouter:", e)
-        return "⚠️ Что-то пошло не так. Попробуй ещё раз чуть позже."
+def ask_gpt(question: str) -> str:
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "openchat/openchat-3.5:free",
+        "messages": [
+            {"role": "system",
+             "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
+            {"role": "user", "content": question}
+        ],
+        "max_tokens": 300,
+        "temperature": 0.7
+    }
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers=headers,
+        json=payload
+    )
+    if resp.ok:
+        return resp.json()["choices"][0]["message"]["content"]
+    else:
+        print("Ошибка OpenRouter:", resp.status_code, resp.text)
+        return "⚠️ Ошибка сервиса. Попробуй позже."
 
-# Обработка всех сообщений
-@bot.message_handler(func=lambda message: True)
+@bot.message_handler(func=lambda m: True)
 def handle_message(message):
     text = message.text.strip()
-
-    if text == "🎓 О школе":
-        bot.send_message(message.chat.id, "🎓 Мы — экспресс-школа гитары soundmusic, обучаем с нуля и не только. Индивидуально, по шагам, с удовольствием. Что у нас есть для тебя? Знакомься: https://soundmusic54.ru/#menu")
-    elif text == "💰 Цены":
-        bot.send_message(message.chat.id, "💰 Актуальные цены на обучение можно посмотреть тут:\nhttps://soundmusic54.ru/#price")
-    elif text == "📝 Как записаться":
-        bot.send_message(message.chat.id, "📝 Просто оставь заявку на сайте:\nhttps://soundmusic54.ru/#sign\nИли напиши сюда, и мы поможем.")
-    elif text == "🥇 Уровни учеников":
-        bot.send_message(message.chat.id, "🥇 У нас учатся и новички, и профи. Программа подстраивается под твой уровень: https://soundmusic54.ru/top")
-    elif text == "🎯 Цели и результат":
-        bot.send_message(message.chat.id, "🎯 Мы помогаем достичь твоей цели: научиться играть, писать музыку или выступать: https://soundmusic54.ru/production")
+    if text in ["🎓 О школе", "💰 Цены", "📝 Как записаться", "🥇 Уровни учеников", "🎯 Цели и результат"]:
+        responses = {
+            "🎓 О школе": "🎓 Экспресс-школа SoundMusic — https://soundmusic54.ru/#menu",
+            "💰 Цены": "💰 Цены: https://soundmusic54.ru/#price",
+            "📝 Как записаться": "📝 Заявка: https://soundmusic54.ru/#sign или просто ответь тут",
+            "🥇 Уровни учеников": "🥇 Мы подстраиваемся под твой уровень — https://soundmusic54.ru/top",
+            "🎯 Цели и результат": "🎯 Достижение цели: https://soundmusic54.ru/production"
+        }
+        bot.send_message(message.chat.id, responses[text])
     else:
         bot.send_chat_action(message.chat.id, 'typing')
-        reply = ask_gpt(text)
-        bot.send_message(message.chat.id, reply)
+        bot.send_message(message.chat.id, ask_gpt(text), reply_markup=main_menu())
 
-print("Бот с OpenRouter запущен!")
-bot.polling()
+print("🚀 Бот с openchat-3.5 запущен!")
+bot.infinity_polling()
