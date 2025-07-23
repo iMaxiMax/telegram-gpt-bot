@@ -1,44 +1,54 @@
 import os
 import telebot
 import requests
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from telebot.apihelper import ApiTelegramException
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # Загружаем переменные из .env
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+if not TELEGRAM_BOT_TOKEN:
+    raise Exception("❌ TELEGRAM_BOT_TOKEN не задан!")
 
-def main_menu():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(KeyboardButton("📚 Курсы"), KeyboardButton("🎸 Преподаватели"))
-    markup.row(KeyboardButton("📍 Адрес"), KeyboardButton("📞 Контакты"))
-    return markup
+if not OPENROUTER_API_KEY:
+    raise Exception("❌ OPENROUTER_API_KEY не задан!")
+
+print("✅ Запуск Telegram-бота...")
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
 
 def ask_gpt(question: str) -> str:
-    if not OPENROUTER_API_KEY:
-        return "⚠️ API-ключ OpenRouter не найден."
-
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
+        # "HTTP-Referer": "https://soundmusic54.ru",
+        # "X-Title": "SoundMusic Bot"
     }
 
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role": "system", "content": "Ты — тёплый, честный помощник SoundMusic. Отвечай понятно и доброжелательно."},
-            {"role": "user", "content": question}
+            {
+                "role": "system",
+                "content": "Ты — тёплый, честный помощник школы SoundMusic. Отвечай понятно, дружелюбно и полезно.",
+            },
+            {
+                "role": "user",
+                "content": question
+            }
         ],
-        "max_tokens": 200,
+        "max_tokens": 300,
         "temperature": 0.7
     }
 
     try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        response = requests.post(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload
+        )
 
         if response.ok:
             data = response.json()
@@ -51,26 +61,28 @@ def ask_gpt(question: str) -> str:
         print("❌ Исключение при обращении к OpenRouter:", str(e))
         return "⚠️ Что-то пошло не так. Попробуй позже."
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.send_message(message.chat.id, "👋 Привет! Я помощник SoundMusic. Задай вопрос или выбери опцию:", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     text = message.text.strip()
-    reply = ask_gpt(text)
+    if not text:
+        bot.send_message(message.chat.id, "Пожалуйста, напиши что-нибудь.")
+        return
 
     try:
-        if reply.strip():
-            bot.send_message(message.chat.id, reply, reply_markup=main_menu())
-        else:
-            bot.send_message(message.chat.id, "⚠️ Ответ пустой.", reply_markup=main_menu())
+        answer = ask_gpt(text)
+        bot.send_message(message.chat.id, answer)
     except ApiTelegramException as e:
-        if "bot was blocked by the user" in str(e):
+        if e.result_json.get('description') == 'Forbidden: bot was blocked by the user':
             print(f"🚫 Пользователь {message.chat.id} заблокировал бота.")
         else:
+            print(f"❌ Ошибка Telegram API: {e}")
             raise e
+    except Exception as e:
+        print(f"❌ Общая ошибка: {e}")
+        bot.send_message(message.chat.id, "⚠️ Что-то пошло не так. Попробуй позже.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     print("🚀 Бот с DeepSeek запущен!")
     bot.polling(none_stop=True)
