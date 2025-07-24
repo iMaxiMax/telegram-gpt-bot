@@ -10,7 +10,7 @@ from telebot.apihelper import ApiTelegramException
 
 # --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY   = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
     raise RuntimeError("❌ TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY должны быть заданы")
@@ -54,7 +54,6 @@ def ask_deepseek(question: str) -> str:
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    # Формируем сводку
     summary = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k, v in site_contents.items())
 
     system = (
@@ -67,8 +66,8 @@ def ask_deepseek(question: str) -> str:
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role": "system",  "content": system},
-            {"role": "user",    "content": question}
+            {"role": "system", "content": system},
+            {"role": "user", "content": question}
         ],
         "max_tokens": 400,
         "temperature": 0.7
@@ -104,7 +103,7 @@ def split_message(text: str, limit=4096):
     return [p for p in parts if p]
 
 # --- Telegram handlers ---
-@bot.message_handler(commands=["start","help"])
+@bot.message_handler(commands=["start", "help"])
 def cmd_start(m):
     bot.send_message(m.chat.id,
         "Привет! Я — помощник SoundMusic. Задавай вопросы про обучение на soundmusic54.ru"
@@ -132,7 +131,7 @@ def run_bot():
         try:
             bot.infinity_polling(skip_pending=True)
         except ApiTelegramException as e:
-            desc = e.result_json.get("description","")
+            desc = e.result_json.get("description", "")
             if "Conflict" in desc:
                 print("⚠️ 409 Conflict — перезапуск polling через 5 сек")
                 time.sleep(5)
@@ -144,9 +143,6 @@ def run_bot():
             print("❌ Неожиданная ошибка polling:", e)
             time.sleep(5)
 
-if __name__ == "__main__":
-    load_site()
-    threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.getenv("PORT", 5000))
-    print(f"🚀 Flask запущен на 0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port)
+# ✅ Эти функции вызываются сразу при запуске Gunicorn
+load_site()
+threading.Thread(target=run_bot, daemon=True).start()
