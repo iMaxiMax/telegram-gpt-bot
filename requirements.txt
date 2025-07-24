@@ -1,3 +1,5 @@
+--no-cache-dir
+--disable-pip-version-check
 pyTelegramBotAPI==4.14.0
 requests
 beautifulsoup4
