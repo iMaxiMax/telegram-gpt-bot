@@ -1,76 +1,123 @@
 import os
+import threading
+import time
+import re
 import requests
 from bs4 import BeautifulSoup
 import telebot
-import re
 
 # ——— Настройки ———
-TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY   = os.getenv("OPENROUTER_API_KEY")
-CONTENT_API_URL      = os.getenv("CONTENT_API_URL", "http://api:5000/content")
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
+    raise ValueError("Не заданы TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY в окружении")
 
-# Якорные ссылки
-ANCHORS = {
-    "menu":     ("О школе",         "https://soundmusic54.ru/#menu"),
-    "sign":     ("Бесплатная неделя", "https://soundmusic54.ru/#sign"),
-    "feedback": ("Отзывы",          "https://soundmusic54.ru/#feedback"),
-    "video":    ("Видео учеников",  "https://soundmusic54.ru/#video"),
-    "price":    ("Цены",            "https://soundmusic54.ru/#price"),
-    "links":    ("Контакты",        "https://soundmusic54.ru/#links"),
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+bot.remove_webhook()  # сбрасываем вебхуки, чтобы не было конфликта polling
+
+# Список страниц и их якорей для ссылок
+PAGES = {
+    "base":       "https://soundmusic54.ru",
+    "production": "https://soundmusic54.ru/production",
+    "fingerstyle":"https://soundmusic54.ru/fingerstyle",
+    "electric":   "https://soundmusic54.ru/electricguitar",
+    "shop":       "https://soundmusic54.ru/shop",
+    "top":        "https://soundmusic54.ru/top",
+    "way":        "https://soundmusic54.ru/way",
+    "plan":       "https://soundmusic54.ru/plan",
+    "faq":        "https://soundmusic54.ru/faq",
 }
 
-# Фразы-подсказки к ключевым словам
+ANCHORS = {
+    "price":    ("Цены",       "https://soundmusic54.ru/#price"),
+    "feedback": ("Отзывы",     "https://soundmusic54.ru/#feedback"),
+    "sign":     ("Записаться", "https://soundmusic54.ru/#sign"),
+    "menu":     ("О школе",    "https://soundmusic54.ru/#menu"),
+    "video":    ("Видео",      "https://soundmusic54.ru/#video"),
+    "links":    ("Контакты",   "https://soundmusic54.ru/#links"),
+}
+
+# Как ключевые слова мапятся на якорь
 KEYWORD_TO_ANCHOR = {
     "цена":    "price",
     "стоимость":"price",
     "отзывы":  "feedback",
     "видео":   "video",
-    "запис":   "sign",     # запись, записаться, заявка
-    "пробн":   "sign",     # пробный, пробная
-    "школ":    "menu",     # школа, о школе
-    "контакт": "links",    # контакты
+    "запис":   "sign",
+    "пробн":   "sign",
+    "школ":    "menu",
+    "контакт": "links",
 }
 
-# Регулярки для Markdown-очистки
+# Регэкспы
 MD_CLEAN_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
+CYRILLIC_LINE = re.compile(r'[\u0400-\u04FF]')  # строки, содержащие хотя бы 1 кириллицу
 
-# ——— Помощники —————————————————
+site_contents = {}  # сюда будем класть очищенный текст каждого раздела
 
-def fetch_site_summary():
-    """Запрос к API-серверу, который возвращает весь текст сайта."""
+
+def fetch_and_clean(url: str) -> str:
+    """Загружает страницу, парсит текст и оставляет только кириллические строки."""
     try:
-        r = requests.get(CONTENT_API_URL, timeout=5)
+        r = requests.get(url, timeout=10)
         r.raise_for_status()
-        return r.json().get("content", "")
+        soup = BeautifulSoup(r.text, "html.parser")
+        lines = soup.get_text(separator="\n").splitlines()
+        clean = [ln.strip() for ln in lines if CYRILLIC_LINE.search(ln)]
+        return "\n".join(clean)
     except Exception:
         return ""
 
-def ask_model(question: str, site_summary: str) -> str:
-    """Отправляет запрос в OpenRouter и возвращает ответ."""
-    system_prompt = (
-        "Ты — тёплый, дружелюбный и понятный помощник школы SoundMusic. "
-        "Используй только информацию с сайта. "
-        "Если точного ответа нет — честно скажи об этом и предложи обратиться к администратору.\n\n"
-        f"{site_summary[:2000]}"
-    )
 
+def load_site():
+    """Обновляет site_contents для всех PAGES."""
+    for key, url in PAGES.items():
+        txt = fetch_and_clean(url)
+        # храним только первые 2000 символов, чтобы не перегружать prompt
+        site_contents[key] = txt[:2000]
+
+
+def background_refresher():
+    """Поток, который обновляет сайт раз в час."""
+    while True:
+        print("⚙️ Фоновая синхронизация сайта...")
+        load_site()
+        time.sleep(3600)
+
+
+def fetch_site_summary() -> str:
+    """Собирает сводку из ключевых разделов."""
+    parts = []
+    for key in ("base", "faq", "plan", "way"):
+        text = site_contents.get(key, "")
+        if text:
+            parts.append(f"Раздел {key}:\n{text}")
+    return "\n\n".join(parts)
+
+
+def ask_model(question: str, summary: str) -> str:
+    """Отправляет запрос с fallback‑логикой."""
+    sys_prompt = (
+        "Ты — тёплый, дружелюбный и понятный помощник школы SoundMusic. "
+        "Используй только информацию из этого контекста. "
+        "Если точного ответа нет — честно скажи об этом.\n\n"
+        f"{summary}"
+    )
     payload = {
-        "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": sys_prompt},
             {"role": "user",   "content": question}
         ],
-        "max_tokens": 800,
+        "max_tokens": 700,
         "temperature": 0.3,
     }
-
-    for model in (
+    models = [
         "tngtech/deepseek-r1t2-chimera:free",
         "mistralai/mistral-7b-instruct:free"
-    ):
-        payload["model"] = model
+    ]
+    for m in models:
         try:
+            payload["model"] = m
             r = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -82,68 +129,72 @@ def ask_model(question: str, site_summary: str) -> str:
             )
             if r.status_code == 200:
                 data = r.json()
-                content = data["choices"][0]["message"]["content"].strip()
-                if content:
-                    return content
+                msg = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if msg:
+                    return msg.strip()
         except Exception:
             pass
-    return "⚠️ Все модели недоступны, попробуйте позже."
+    return "⚠️ Извините, сейчас все модели заняты — попробуйте позже."
+
 
 def clean_markdown(text: str) -> str:
-    """Простая очистка Markdown-ish HTML-тегов и подчистка подчёркиваний."""
     text = MD_CLEAN_RE.sub("\n", text)
-    return text.replace("__", "*").replace("**", "*")
+    return text.replace("__", "*").replace("**", "*").strip()
+
 
 def find_anchor(question: str) -> str:
-    """По ключевым словам в вопросе возвращает якорь или пусто."""
     q = question.lower()
     for kw, anchor in KEYWORD_TO_ANCHOR.items():
         if kw in q:
             return anchor
     return ""
 
-# ——— Обработчики ——————————————
+
+# ——— Telegram handlers —————————————————
+
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(msg):
-    keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.row("🎓 О школе", "📝 Записаться", "💰 Цены")
-    msg = bot.send_message(
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("🎓 О школе", "📝 Записаться", "💰 Цены")
+    bot.send_message(
         msg.chat.id,
-        "Привет! Я помощник SoundMusic. Спроси про занятия, цены или оставь заявку.",
-        reply_markup=keyboard
+        "Привет! Я помощник SoundMusic — задай свой вопрос.",
+        reply_markup=kb
     )
+
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    question = message.text.strip()
-    if not question:
+    q = message.text.strip()
+    if not q:
         return bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
 
     bot.send_chat_action(message.chat.id, 'typing')
-
-    # Получаем актуальный текст сайта
     summary = fetch_site_summary()
+    ans = ask_model(q, summary)
+    ans = clean_markdown(ans)
 
-    # Основной ответ от AI
-    answer = ask_model(question, summary)
-    answer = clean_markdown(answer)
+    # Добавляем якорную ссылку, если нужно
+    akey = find_anchor(q)
+    if akey in ANCHORS:
+        title, url = ANCHORS[akey]
+        ans += f"\n\n*Подробнее:* [{title}]({url})"
 
-    # Определяем, стоит ли предложить ссылку
-    anchor_key = find_anchor(question)
-    if anchor_key and anchor_key in ANCHORS:
-        title, url = ANCHORS[anchor_key]
-        answer += f"\n\n*Подробнее:* [{title}]({url})"
-
-    # Отправляем в Telegram, разбивая на 4096 символов
-    for i in range(0, len(answer), 4096):
+    # Разбиваем по 4096
+    for i in range(0, len(ans), 4096):
         bot.send_message(
             message.chat.id,
-            answer[i:i+4096],
+            ans[i:i+4096],
             parse_mode="Markdown"
         )
 
-# ——— Запуск —————————————————————————
 
 if __name__ == "__main__":
-    bot.infinity_polling()
+    # Сначала синхронизируем сайт
+    load_site()
+    # Запускаем фоновой поток
+    threading.Thread(target=background_refresher, daemon=True).start()
+    print("🚀 Бот запущен и работает единственным экземпляром.")
+    # Бесконечный polling с очисткой старых апдейтов
+    bot.infinity_polling(skip_pending=True)
