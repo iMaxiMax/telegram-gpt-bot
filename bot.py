@@ -1,29 +1,31 @@
 import os
 import threading
+import time
 import requests
 from bs4 import BeautifulSoup
 import telebot
 import re
 from flask import Flask
+from telebot.apihelper import ApiTelegramException
 
 # --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY   = os.getenv("OPENROUTER_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
-    raise RuntimeError("❌ Установите в Railway переменные TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY")
+    raise RuntimeError("❌ TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY должны быть заданы")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
-# --- Сайт SoundMusic ---
+# --- Загрузка сайта ---
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
                    "Chrome/115.0 Safari/537.36")
 }
 BASE_URL = "https://soundmusic54.ru"
-PATHS = ["", "production","fingerstyle","electricguitar","shop","top","way","plan","faq"]
+PATHS = ["", "production", "fingerstyle", "electricguitar", "shop", "top", "way", "plan", "faq"]
 site_contents = {}
 
 def fetch_page(url):
@@ -45,24 +47,24 @@ def load_site():
         site_contents[p or "base"] = text
     print("✅ Сайт загружен.")
 
-# --- OpenRouter/DeepSeek запрос ---
+# --- OpenRouter запрос ---
 def ask_deepseek(question: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    summary = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k,v in site_contents.items())
+    summary = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k, v in site_contents.items())
     system = (
         "Ты — дружелюбный помощник SoundMusic. "
-        "Отвечай по информации с сайта, не выдумывай.\n"
+        "Отвечай строго по информации с сайта, не придумывай.\n"
         f"{summary}"
     )
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role":"system","content": system},
-            {"role":"user","content": question}
+            {"role": "system", "content": system},
+            {"role": "user",   "content": question}
         ],
         "max_tokens": 400,
         "temperature": 0.7
@@ -77,40 +79,80 @@ def ask_deepseek(question: str) -> str:
         return "⚠️ Сервис недоступен, попробуйте позже."
 
 def format_md(text: str) -> str:
-    # Делаем **жирным** через Markdown
-    txt = re.sub(r"__(.+?)__", r"*\1*", text)
-    return re.sub(r"<br\s*/?>", "\n", txt)
+    # убираем HTML <br>, конвертим __…__ в *…*
+    t = re.sub(r"<br\s*/?>", "\n", text)
+    return t.replace("__", "*").replace("**", "*")
 
-# --- Обработчики Telegram ---
+def split_message(text: str, limit=4096):
+    """
+    Сначала пытаемся разбить по двойному переводу строки,
+    затем — по одиночному, и лишь в самом крайнем случае —
+    по ровно limit символов.
+    """
+    if len(text) <= limit:
+        return [text]
+    parts = []
+    for block in text.split("\n\n"):
+        if len(block) <= limit:
+            parts.append(block)
+        else:
+            # внутри слишком длинного блока — разбиваем по строкам
+            for line in block.split("\n"):
+                if len(line) <= limit:
+                    parts.append(line)
+                else:
+                    # и вот тут уже режем по символам
+                    for i in range(0, len(line), limit):
+                        parts.append(line[i:i+limit])
+        # после каждого блока сохраняем пустую строку-отступ
+        parts.append("")  # чтобы между абзацами был перенос
+    # удалим возможные лишние пустые в начале/конце
+    return [p for p in parts if p]
+
+# --- Telegram handlers ---
 @bot.message_handler(commands=["start","help"])
 def cmd_start(m):
     bot.send_message(m.chat.id,
-        "Привет! Я — помощник SoundMusic. Задавайте вопросы про обучение на soundmusic54.ru"
+        "Привет! Я — помощник SoundMusic. Задавай вопросы про обучение на soundmusic54.ru"
     )
 
 @bot.message_handler(func=lambda m: True)
 def handle_msg(m):
     q = m.text.strip()
     if not q:
-        return bot.send_message(m.chat.id, "❓ Напиши вопрос текстом.")
+        return bot.send_message(m.chat.id, "❓ Напиши, пожалуйста, текстом.")
     bot.send_chat_action(m.chat.id, "typing")
     ans = ask_deepseek(q)
-    for chunk in [ans[i:i+4000] for i in range(0, len(ans), 4000)]:
-        bot.send_message(m.chat.id, format_md(chunk), parse_mode="Markdown")
+    safe = format_md(ans)
+    for chunk in split_message(safe):
+        bot.send_message(m.chat.id, chunk, parse_mode="Markdown")
 
 # --- Flask healthcheck ---
 @app.route("/health")
 def health():
     return "OK", 200
 
+# --- robust polling loop ---
 def run_bot():
-    bot.infinity_polling(skip_pending=True)
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True)
+        except ApiTelegramException as e:
+            desc = e.result_json.get("description","")
+            if "Conflict" in desc:
+                print("⚠️ 409 Conflict — перезапуск polling через 5 сек")
+                time.sleep(5)
+                continue
+            else:
+                print("❌ Ошибка polling:", e)
+                time.sleep(5)
+        except Exception as e:
+            print("❌ Неожиданная ошибка polling:", e)
+            time.sleep(5)
 
 if __name__ == "__main__":
     load_site()
-    # Telegram polling в фоне
     threading.Thread(target=run_bot, daemon=True).start()
-    # Запуск Flask (Railway прослушивает PORT)
     port = int(os.getenv("PORT", 5000))
-    print(f"🚀 Запуск Flask на 0.0.0.0:{port}")
+    print(f"🚀 Flask запущен на 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
