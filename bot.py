@@ -1,200 +1,116 @@
 import os
 import threading
-import time
-import re
 import requests
 from bs4 import BeautifulSoup
 import telebot
+import re
+from flask import Flask
 
-# ——— Настройки ———
+# --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
-    raise ValueError("Не заданы TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY в окружении")
+    raise RuntimeError("❌ Установите в Railway переменные TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-bot.remove_webhook()  # сбрасываем вебхуки, чтобы не было конфликта polling
+app = Flask(__name__)
 
-# Список страниц и их якорей для ссылок
-PAGES = {
-    "base":       "https://soundmusic54.ru",
-    "production": "https://soundmusic54.ru/production",
-    "fingerstyle":"https://soundmusic54.ru/fingerstyle",
-    "electric":   "https://soundmusic54.ru/electricguitar",
-    "shop":       "https://soundmusic54.ru/shop",
-    "top":        "https://soundmusic54.ru/top",
-    "way":        "https://soundmusic54.ru/way",
-    "plan":       "https://soundmusic54.ru/plan",
-    "faq":        "https://soundmusic54.ru/faq",
+# --- Сайт SoundMusic ---
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/115.0 Safari/537.36")
 }
+BASE_URL = "https://soundmusic54.ru"
+PATHS = ["", "production","fingerstyle","electricguitar","shop","top","way","plan","faq"]
+site_contents = {}
 
-ANCHORS = {
-    "price":    ("Цены",       "https://soundmusic54.ru/#price"),
-    "feedback": ("Отзывы",     "https://soundmusic54.ru/#feedback"),
-    "sign":     ("Записаться", "https://soundmusic54.ru/#sign"),
-    "menu":     ("О школе",    "https://soundmusic54.ru/#menu"),
-    "video":    ("Видео",      "https://soundmusic54.ru/#video"),
-    "links":    ("Контакты",   "https://soundmusic54.ru/#links"),
-}
-
-# Как ключевые слова мапятся на якорь
-KEYWORD_TO_ANCHOR = {
-    "цена":    "price",
-    "стоимость":"price",
-    "отзывы":  "feedback",
-    "видео":   "video",
-    "запис":   "sign",
-    "пробн":   "sign",
-    "школ":    "menu",
-    "контакт": "links",
-}
-
-# Регэкспы
-MD_CLEAN_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
-CYRILLIC_LINE = re.compile(r'[\u0400-\u04FF]')  # строки, содержащие хотя бы 1 кириллицу
-
-site_contents = {}  # сюда будем класть очищенный текст каждого раздела
-
-
-def fetch_and_clean(url: str) -> str:
-    """Загружает страницу, парсит текст и оставляет только кириллические строки."""
+def fetch_page(url):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, headers=HEADERS, timeout=5)
         r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        lines = soup.get_text(separator="\n").splitlines()
-        clean = [ln.strip() for ln in lines if CYRILLIC_LINE.search(ln)]
-        return "\n".join(clean)
-    except Exception:
+        return r.text
+    except Exception as e:
+        print(f"❌ Ошибка при загрузке {url}: {e}")
         return ""
 
-
 def load_site():
-    """Обновляет site_contents для всех PAGES."""
-    for key, url in PAGES.items():
-        txt = fetch_and_clean(url)
-        # храним только первые 2000 символов, чтобы не перегружать prompt
-        site_contents[key] = txt[:2000]
+    print("⚙️ Загружаю сайт...")
+    for p in PATHS:
+        url = BASE_URL + ("/" + p if p else "")
+        print(f" → {url}")
+        html = fetch_page(url)
+        text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
+        site_contents[p or "base"] = text
+    print("✅ Сайт загружен.")
 
-
-def background_refresher():
-    """Поток, который обновляет сайт раз в час."""
-    while True:
-        print("⚙️ Фоновая синхронизация сайта...")
-        load_site()
-        time.sleep(3600)
-
-
-def fetch_site_summary() -> str:
-    """Собирает сводку из ключевых разделов."""
-    parts = []
-    for key in ("base", "faq", "plan", "way"):
-        text = site_contents.get(key, "")
-        if text:
-            parts.append(f"Раздел {key}:\n{text}")
-    return "\n\n".join(parts)
-
-
-def ask_model(question: str, summary: str) -> str:
-    """Отправляет запрос с fallback‑логикой."""
-    sys_prompt = (
-        "Ты — тёплый, дружелюбный и понятный помощник школы SoundMusic. "
-        "Используй только информацию из этого контекста. "
-        "Если точного ответа нет — честно скажи об этом.\n\n"
+# --- OpenRouter/DeepSeek запрос ---
+def ask_deepseek(question: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    summary = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k,v in site_contents.items())
+    system = (
+        "Ты — дружелюбный помощник SoundMusic. "
+        "Отвечай по информации с сайта, не выдумывай.\n"
         f"{summary}"
     )
     payload = {
+        "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user",   "content": question}
+            {"role":"system","content": system},
+            {"role":"user","content": question}
         ],
-        "max_tokens": 700,
-        "temperature": 0.3,
+        "max_tokens": 400,
+        "temperature": 0.7
     }
-    models = [
-        "tngtech/deepseek-r1t2-chimera:free",
-        "mistralai/mistral-7b-instruct:free"
-    ]
-    for m in models:
-        try:
-            payload["model"] = m
-            r = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json=payload,
-                timeout=15
-            )
-            if r.status_code == 200:
-                data = r.json()
-                msg = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if msg:
-                    return msg.strip()
-        except Exception:
-            pass
-    return "⚠️ Извините, сейчас все модели заняты — попробуйте позже."
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip() or "⚠️ Пустой ответ."
+    except Exception as e:
+        print(f"❌ OpenRouter error: {e}")
+        return "⚠️ Сервис недоступен, попробуйте позже."
 
+def format_md(text: str) -> str:
+    # Делаем **жирным** через Markdown
+    txt = re.sub(r"__(.+?)__", r"*\1*", text)
+    return re.sub(r"<br\s*/?>", "\n", txt)
 
-def clean_markdown(text: str) -> str:
-    text = MD_CLEAN_RE.sub("\n", text)
-    return text.replace("__", "*").replace("**", "*").strip()
-
-
-def find_anchor(question: str) -> str:
-    q = question.lower()
-    for kw, anchor in KEYWORD_TO_ANCHOR.items():
-        if kw in q:
-            return anchor
-    return ""
-
-
-# ——— Telegram handlers —————————————————
-
-
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(msg):
-    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("🎓 О школе", "📝 Записаться", "💰 Цены")
-    bot.send_message(
-        msg.chat.id,
-        "Привет! Я помощник SoundMusic — задай свой вопрос.",
-        reply_markup=kb
+# --- Обработчики Telegram ---
+@bot.message_handler(commands=["start","help"])
+def cmd_start(m):
+    bot.send_message(m.chat.id,
+        "Привет! Я — помощник SoundMusic. Задавайте вопросы про обучение на soundmusic54.ru"
     )
 
-
 @bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    q = message.text.strip()
+def handle_msg(m):
+    q = m.text.strip()
     if not q:
-        return bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
+        return bot.send_message(m.chat.id, "❓ Напиши вопрос текстом.")
+    bot.send_chat_action(m.chat.id, "typing")
+    ans = ask_deepseek(q)
+    for chunk in [ans[i:i+4000] for i in range(0, len(ans), 4000)]:
+        bot.send_message(m.chat.id, format_md(chunk), parse_mode="Markdown")
 
-    bot.send_chat_action(message.chat.id, 'typing')
-    summary = fetch_site_summary()
-    ans = ask_model(q, summary)
-    ans = clean_markdown(ans)
+# --- Flask healthcheck ---
+@app.route("/health")
+def health():
+    return "OK", 200
 
-    # Добавляем якорную ссылку, если нужно
-    akey = find_anchor(q)
-    if akey in ANCHORS:
-        title, url = ANCHORS[akey]
-        ans += f"\n\n*Подробнее:* [{title}]({url})"
-
-    # Разбиваем по 4096
-    for i in range(0, len(ans), 4096):
-        bot.send_message(
-            message.chat.id,
-            ans[i:i+4096],
-            parse_mode="Markdown"
-        )
-
+def run_bot():
+    bot.infinity_polling(skip_pending=True)
 
 if __name__ == "__main__":
-    # Сначала синхронизируем сайт
     load_site()
-    # Запускаем фоновой поток
-    threading.Thread(target=background_refresher, daemon=True).start()
-    print("🚀 Бот запущен и работает единственным экземпляром.")
-    # Бесконечный polling с очисткой старых апдейтов
-    bot.infinity_polling(skip_pending=True)
+    # Telegram polling в фоне
+    threading.Thread(target=run_bot, daemon=True).start()
+    # Запуск Flask (Railway прослушивает PORT)
+    port = int(os.getenv("PORT", 5000))
+    print(f"🚀 Запуск Flask на 0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port)
