@@ -54,17 +54,21 @@ def ask_deepseek(question: str) -> str:
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
+    # Формируем сводку
     summary = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k, v in site_contents.items())
+
     system = (
-        "Ты — дружелюбный помощник SoundMusic. "
-        "Отвечай строго по информации с сайта, не придумывай.\n"
-        f"{summary}"
+        "Ты — тёплый и дружелюбный помощник школы гитары SoundMusic из Новосибирска.\n"
+        "Отвечай **только** по фактам с сайта soundmusic54.ru, **никаких выдуманных цифр**.\n"
+        "Если тебя спрашивают цену, просто отправь ссылку на раздел Цены: https://soundmusic54.ru/#price\n"
+        "Если информации на сайте нет — честно скажи об этом и предложи посетить сайт.\n\n"
+        f"Данные сайта (обрезано до 800 символов на раздел):\n{summary}"
     )
     payload = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
         "messages": [
-            {"role": "system", "content": system},
-            {"role": "user",   "content": question}
+            {"role": "system",  "content": system},
+            {"role": "user",    "content": question}
         ],
         "max_tokens": 400,
         "temperature": 0.7
@@ -79,16 +83,10 @@ def ask_deepseek(question: str) -> str:
         return "⚠️ Сервис недоступен, попробуйте позже."
 
 def format_md(text: str) -> str:
-    # убираем HTML <br>, конвертим __…__ в *…*
     t = re.sub(r"<br\s*/?>", "\n", text)
     return t.replace("__", "*").replace("**", "*")
 
 def split_message(text: str, limit=4096):
-    """
-    Сначала пытаемся разбить по двойному переводу строки,
-    затем — по одиночному, и лишь в самом крайнем случае —
-    по ровно limit символов.
-    """
     if len(text) <= limit:
         return [text]
     parts = []
@@ -96,17 +94,13 @@ def split_message(text: str, limit=4096):
         if len(block) <= limit:
             parts.append(block)
         else:
-            # внутри слишком длинного блока — разбиваем по строкам
             for line in block.split("\n"):
                 if len(line) <= limit:
                     parts.append(line)
                 else:
-                    # и вот тут уже режем по символам
                     for i in range(0, len(line), limit):
                         parts.append(line[i:i+limit])
-        # после каждого блока сохраняем пустую строку-отступ
-        parts.append("")  # чтобы между абзацами был перенос
-    # удалим возможные лишние пустые в начале/конце
+        parts.append("")
     return [p for p in parts if p]
 
 # --- Telegram handlers ---
@@ -132,7 +126,7 @@ def handle_msg(m):
 def health():
     return "OK", 200
 
-# --- robust polling loop ---
+# --- Robust polling loop ---
 def run_bot():
     while True:
         try:
