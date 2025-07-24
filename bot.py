@@ -1,100 +1,99 @@
 import os
-import sys
 import requests
 from bs4 import BeautifulSoup
 import telebot
 import re
 
-# --- Настройки ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not TELEGRAM_BOT_TOKEN or not OPENROUTER_API_KEY:
-    raise RuntimeError("❌ Не заданы переменные TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_URL = "https://soundmusic54.ru"
 PATHS = ["", "production", "fingerstyle", "electricguitar", "shop", "top", "way", "plan", "faq"]
+
 site_contents = {}
 
 def fetch_page(url):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        r.raise_for_status()
-        return r.text
-    except Exception as e:
-        print(f"Ошибка при загрузке {url}: {e}")
-        return None
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return resp.text
+    except Exception:
+        return ""
 
 def load_site():
-    print("⚙️ Загружаю сайт...")
-    for p in PATHS:
-        u = BASE_URL + ("/" + p if p else "")
-        html = fetch_page(u)
-        text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True) if html else ""
-        site_contents[p or "base"] = text
-    print("✅ Сайт загружен")
+    for path in PATHS:
+        url = f"{BASE_URL}/{path}" if path else BASE_URL
+        html = fetch_page(url)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+            text = soup.get_text(separator="\n", strip=True)
+            site_contents[path or "base"] = text
+        else:
+            site_contents[path or "base"] = ""
 
-def ask_deepseek(q):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    sec = "\n\n".join(f"Раздел '{k}': {v[:800]}" for k, v in site_contents.items() if k in ("base","faq","plan","way"))
-    sys_p = ("Ты — помощник SoundMusic, опирайся на сайт. "
-             "Если нет точной информации — честно скажи об этом.\n" + sec)
-    payload = {"model": "tngtech/deepseek-r1t2-chimera:free",
-               "messages":[{"role":"system","content":sys_p},{"role":"user","content":q}],
-               "max_tokens":800, "temperature":0.7}
-    for model in [
-        "tngtech/deepseek-r1t2-chimera:free",
-        "togethercomputer/stripedhyena-hessian:free",
-        "mistralai/mistral-7b-instruct:free"
-    ]:
-        payload["model"] = model
-        try:
-            r = requests.post(url, headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=20)
-            if r.status_code == 200:
-                d = r.json()
-                txt = d.get("choices",[{}])[0].get("message",{}).get("content","").strip()
-                return txt or "⚠️ Пустой ответ."
-            if r.status_code in (400,429):
-                print(f"❌ Модель {model} вернула {r.status_code}, пробуем следующую")
-                continue
-        except Exception as e:
-            print(f"❌ Ошибка {model}: {e}")
-    return "⚠️ Все модели недоступны, попробуйте позже."
+def ask_model(question):
+    important_sections = ["base", "faq", "plan", "way"]
+    site_summary = "\n\n".join(
+        f"Раздел '{key}': {val[:800]}"
+        for key, val in site_contents.items() if key in important_sections
+    )
 
-def fmt_md(text):
-    t = text.replace("__","*").replace("**","*")
-    return re.sub(r'<br\s*/?>','\n',t,flags=re.I)
+    system_prompt = (
+        "Ты — тёплый и дружелюбный помощник школы SoundMusic. "
+        "Помогай пользователю, опираясь на информацию с сайта. "
+        "Если точной информации нет — честно скажи об этом и предложи обратиться к администратору или перейти на сайт.\n\n"
+        f"Вот данные с сайта:\n{site_summary}"
+    )
 
-@bot.message_handler(commands=['start','help'])
-def cmd_start(m):
-    bot.send_message(m.chat.id, "Привет! Я — помощник SoundMusic. Задавай вопросы!")
+    payload = {
+        "model": "tngtech/deepseek-r1t2-chimera:free",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question}
+        ],
+        "max_tokens": 800,
+        "temperature": 0.3
+    }
+
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=payload,
+            timeout=20
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return "⚠️ Ошибка при запросе. Попробуйте позже."
+
+def clean_markdown(text):
+    text = text.replace("__", "*").replace("**", "*")
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    return text
+
+@bot.message_handler(commands=['start', 'help'])
+def welcome(message):
+    bot.send_message(message.chat.id, "Привет! Я помощник школы SoundMusic. Задай вопрос о занятиях, расписании, ценах и т.д.")
 
 @bot.message_handler(func=lambda m: True)
-def msg(m):
-    q = m.text.strip()
-    if not q:
-        bot.send_message(m.chat.id, "Пожалуйста, задай вопрос.")
+def handle_message(message):
+    question = message.text.strip()
+    if not question:
+        bot.send_message(message.chat.id, "Пожалуйста, задай вопрос.")
         return
-    bot.send_chat_action(m.chat.id, 'typing')
-    a = ask_deepseek(q)
-    a = fmt_md(a)
-    for i in range(0, len(a), 4000):
-        bot.send_message(m.chat.id, a[i:i+4000], parse_mode="Markdown")
 
-def check_conflict():
-    try:
-        bot.get_updates(offset=-1, timeout=1)
-    except telebot.apihelper.ApiTelegramException as e:
-        if "409" in str(e):
-            print("❗ Уже запущен другой бот → 409 Conflict. Выход.")
-            sys.exit(0)
-        else:
-            raise
+    bot.send_chat_action(message.chat.id, 'typing')
+    answer = ask_model(question)
+    cleaned = clean_markdown(answer)
+    for i in range(0, len(cleaned), 4096):
+        bot.send_message(message.chat.id, cleaned[i:i+4096], parse_mode="Markdown")
 
 if __name__ == "__main__":
-    check_conflict()
     load_site()
-    print("🚀 Бот запущен!")
-    bot.infinity_polling()
+    bot.polling(none_stop=True)
