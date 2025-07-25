@@ -81,26 +81,55 @@ def ask_deepseek(question: str) -> str:
         print(f"❌ OpenRouter error: {e}")
         return "⚠️ Сервис недоступен, попробуйте позже."
 
-def format_md(text: str) -> str:
-    t = re.sub(r"<br\s*/?>", "\n", text)
-    return t.replace("__", "*").replace("**", "*")
+# ФУНКЦИЯ ИСПРАВЛЕНА: Экранирование Markdown-символов
+def safe_markdown(text: str) -> str:
+    """
+    Экранирует все спецсимволы Markdown в тексте
+    чтобы избежать ошибок парсинга в Telegram
+    """
+    # Список символов для экранирования
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    for char in escape_chars:
+        text = text.replace(char, '\\' + char)
+    return text
 
+# ФУНКЦИЯ ИСПРАВЛЕНА: Улучшенное разбиение сообщений
 def split_message(text: str, limit=4096):
+    """
+    Разбивает текст на части с учетом:
+    - Максимальной длины сообщения в Telegram
+    - Сохранения целостности абзацев
+    """
     if len(text) <= limit:
         return [text]
+    
     parts = []
-    for block in text.split("\n\n"):
-        if len(block) <= limit:
-            parts.append(block)
+    current_chunk = ""
+    
+    # Разбиваем по абзацам
+    paragraphs = text.split('\n\n')
+    
+    for para in paragraphs:
+        # Если абзац слишком длинный, разбиваем на строки
+        if len(para) > limit:
+            lines = para.split('\n')
+            for line in lines:
+                if len(current_chunk) + len(line) + 1 > limit:
+                    if current_chunk:
+                        parts.append(current_chunk.strip())
+                        current_chunk = ""
+                current_chunk += line + "\n"
         else:
-            for line in block.split("\n"):
-                if len(line) <= limit:
-                    parts.append(line)
-                else:
-                    for i in range(0, len(line), limit):
-                        parts.append(line[i:i+limit])
-        parts.append("")
-    return [p for p in parts if p]
+            if len(current_chunk) + len(para) + 2 > limit:
+                if current_chunk:
+                    parts.append(current_chunk.strip())
+                    current_chunk = ""
+            current_chunk += para + "\n\n"
+    
+    if current_chunk.strip():
+        parts.append(current_chunk.strip())
+    
+    return parts
 
 # --- Telegram handlers ---
 @bot.message_handler(commands=["start", "help"])
@@ -116,9 +145,24 @@ def handle_msg(m):
         return bot.send_message(m.chat.id, "❓ Напиши, пожалуйста, текстом.")
     bot.send_chat_action(m.chat.id, "typing")
     ans = ask_deepseek(q)
-    safe = format_md(ans)
-    for chunk in split_message(safe):
-        bot.send_message(m.chat.id, chunk, parse_mode="Markdown")
+    
+    # ОБРАБОТКА ИСПРАВЛЕНА: Экранирование + разбиение
+    safe_text = safe_markdown(ans)  # Экранируем спецсимволы
+    chunks = split_message(safe_text)  # Разбиваем на части
+    
+    for chunk in chunks:
+        try:
+            # ДОБАВЛЕНО: disable_web_page_preview для избежания конфликтов
+            bot.send_message(
+                m.chat.id, 
+                chunk, 
+                parse_mode="MarkdownV2",  # Используем более стабильную версию
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            print(f"⚠️ Ошибка отправки: {e}")
+            # Фоллбэк: отправка без разметки
+            bot.send_message(m.chat.id, chunk)
 
 # --- Flask healthcheck ---
 @app.route("/health")
@@ -129,6 +173,8 @@ def health():
 def run_bot():
     while True:
         try:
+            # ДОБАВЛЕНО: Очистка вебхуков перед запуском
+            bot.remove_webhook()
             bot.infinity_polling(skip_pending=True)
         except ApiTelegramException as e:
             desc = e.result_json.get("description", "")
