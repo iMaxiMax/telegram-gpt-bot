@@ -1,34 +1,58 @@
-# ... (предыдущий код остается без изменений до функций)
+import os
+import threading
+import time
+import requests
+from bs4 import BeautifulSoup
+import telebot
+import re
+from flask import Flask
+from telebot.apihelper import ApiTelegramException
 
-# --- УЛУЧШЕННАЯ ФУНКЦИЯ РАЗБИЕНИЯ СООБЩЕНИЙ ---
+# ... (остальной код без изменений до функций разбиения сообщений) ...
+
 def split_message(text: str, limit=4096) -> list:
     """
-    Надежно разбивает текст на части, гарантируя целостность слов и предложений.
-    Возвращает список частей.
+    Надежно разбивает текст на части, сохраняя целостность предложений
+    и слов. Гарантирует, что сообщения не будут обрываться.
     """
+    # Если текст полностью помещается в одно сообщение
     if len(text) <= limit:
         return [text]
     
+    # Разбиваем текст на предложения
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
     parts = []
-    while text:
-        # Если оставшийся текст меньше лимита - добавляем и выходим
-        if len(text) <= limit:
-            parts.append(text)
-            break
+    current_part = ""
+    
+    for sentence in sentences:
+        # Проверяем, поместится ли предложение в текущую часть
+        if len(current_part) + len(sentence) + 1 <= limit:
+            current_part += (sentence + " ")
+        else:
+            # Если текущая часть не пустая - сохраняем ее
+            if current_part:
+                parts.append(current_part.strip())
+                current_part = ""
             
-        # Находим последний пробел/перенос строки в пределах лимита
-        split_index = limit
-        for i in range(limit, max(0, limit-50), -1):
-            if text[i] in (' ', '\n', '.', ',', ';', '!', '?'):
-                split_index = i + 1  # включаем разделитель
-                break
-                
-        parts.append(text[:split_index].strip())
-        text = text[split_index:].strip()
-        
+            # Если одно предложение длиннее лимита
+            if len(sentence) > limit:
+                # Разбиваем по словам
+                words = sentence.split()
+                for word in words:
+                    if len(current_part) + len(word) + 1 > limit:
+                        parts.append(current_part.strip())
+                        current_part = ""
+                    current_part += (word + " ")
+            else:
+                current_part = sentence + " "
+    
+    # Добавляем последнюю часть
+    if current_part.strip():
+        parts.append(current_part.strip())
+    
     return parts
 
-# --- ДОБАВЛЕНА ОБРАБОТКА ДЛИННЫХ ОТВЕТОВ ---
 @bot.message_handler(func=lambda m: True)
 def handle_msg(m):
     q = m.text.strip()
@@ -38,37 +62,39 @@ def handle_msg(m):
     bot.send_chat_action(m.chat.id, "typing")
     
     try:
-        # Получаем ответ от нейросети
         ans = ask_deepseek(q)
-        # Экранируем спецсимволы Markdown
         safe_text = safe_markdown(ans)
-        # Разбиваем на части
         chunks = split_message(safe_text)
         total_chunks = len(chunks)
         
-        # Отправляем с прогрессом
+        # Отправляем с индикацией прогресса
         for i, chunk in enumerate(chunks):
-            progress = f"({i+1}/{total_chunks}) " if total_chunks > 1 else ""
-            full_chunk = progress + chunk
+            # Добавляем индикатор прогресса только если частей больше 1
+            prefix = f"({i+1}/{total_chunks}) " if total_chunks > 1 else ""
+            
+            # Добавляем "продолжение следует" для всех частей кроме последней
+            suffix = "\n\n↪️ продолжение следует..." if i < total_chunks - 1 else ""
+            
+            full_message = prefix + chunk + suffix
             
             try:
                 bot.send_message(
                     m.chat.id, 
-                    full_chunk, 
+                    full_message, 
                     parse_mode="MarkdownV2",
                     disable_web_page_preview=True
                 )
             except Exception as e:
                 print(f"⚠️ Ошибка отправки: {e}")
                 # Фолбэк: отправка без разметки
-                bot.send_message(m.chat.id, full_chunk)
+                bot.send_message(m.chat.id, full_message)
                 
-            # Небольшая задержка между частями
-            time.sleep(0.3)
+            # Пауза между сообщениями
+            time.sleep(0.5)
             
     except Exception as e:
         error_msg = f"⚠️ Ошибка: {str(e)[:200]}"
         bot.send_message(m.chat.id, "Что-то пошло не так... Попробуйте задать вопрос иначе")
         print(f"❌ Ошибка обработки сообщения: {e}")
 
-# ... (остальной код без изменений)
+# ... (остальной код без изменений) ...
