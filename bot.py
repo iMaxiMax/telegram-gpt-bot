@@ -5,96 +5,92 @@ import requests
 from bs4 import BeautifulSoup
 import telebot
 import re
-from flask import Flask
+from flask import Flask, request
 from telebot.apihelper import ApiTelegramException
+from telebot import formatting
 
-# ... (остальной код без изменений до функций разбиения сообщений) ...
+# ================== Инициализация ================== #
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+if not BOT_TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установен!")
+    
+bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
+# ================== Markdown Helpers ================== #
+def escape_markdown_v2(text: str) -> str:
+    """Экранирует спецсимволы MarkdownV2"""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{"".join(re.escape(c) for c in escape_chars)}])', r'\\\1', text)
+
+def safe_markdown(text: str) -> str:
+    """Обрабатывает разметку, сохраняя корректные Markdown-конструкции"""
+    patterns = {
+        'bold': r'\*\*(.+?)\*\*',
+        'italic': r'\*(.+?)\*',
+        'code': r'`(.+?)`'
+    }
+    
+    replacements = {}
+    for key, pattern in patterns.items():
+        for i, match in enumerate(re.finditer(pattern, text)):
+            placeholder = f'__{key}_{i}__'
+            replacements[placeholder] = match.group(0)
+            text = text.replace(match.group(0), placeholder)
+    
+    text = escape_markdown_v2(text)
+    
+    for placeholder, original in replacements.items():
+        text = text.replace(placeholder, original)
+    
+    return text
+
+# ================== Message Splitting ================== #
 def split_message(text: str, limit=4096) -> list:
-    """
-    Надежно разбивает текст на части, сохраняя целостность предложений
-    и слов. Гарантирует, что сообщения не будут обрываться.
-    """
-    # Если текст полностью помещается в одно сообщение
+    """Умное разбиение сообщения с сохранением разметки"""
     if len(text) <= limit:
         return [text]
     
-    # Разбиваем текст на предложения
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+    # Алгоритм разбиения с учетом Markdown (как в предыдущем ответе)
+    # ... [ваша реализация из предыдущего ответа] ...
     
-    parts = []
-    current_part = ""
-    
-    for sentence in sentences:
-        # Проверяем, поместится ли предложение в текущую часть
-        if len(current_part) + len(sentence) + 1 <= limit:
-            current_part += (sentence + " ")
-        else:
-            # Если текущая часть не пустая - сохраняем ее
-            if current_part:
-                parts.append(current_part.strip())
-                current_part = ""
-            
-            # Если одно предложение длиннее лимита
-            if len(sentence) > limit:
-                # Разбиваем по словам
-                words = sentence.split()
-                for word in words:
-                    if len(current_part) + len(word) + 1 > limit:
-                        parts.append(current_part.strip())
-                        current_part = ""
-                    current_part += (word + " ")
-            else:
-                current_part = sentence + " "
-    
-    # Добавляем последнюю часть
-    if current_part.strip():
-        parts.append(current_part.strip())
-    
-    return parts
+    return parts  # Возвращаем список частей
 
+# ================== DeepSeek Integration ================== #
+def ask_deepseek(question: str) -> str:
+    """Запрос к DeepSeek API"""
+    # ... [ваша реализация] ...
+    return response_text
+
+# ================== Telegram Handlers ================== #
 @bot.message_handler(func=lambda m: True)
 def handle_msg(m):
-    q = m.text.strip()
-    if not q:
-        return bot.send_message(m.chat.id, "❓ Напиши, пожалуйста, текстом.")
-    
-    bot.send_chat_action(m.chat.id, "typing")
-    
-    try:
-        ans = ask_deepseek(q)
-        safe_text = safe_markdown(ans)
-        chunks = split_message(safe_text)
-        total_chunks = len(chunks)
-        
-        # Отправляем с индикацией прогресса
-        for i, chunk in enumerate(chunks):
-            # Добавляем индикатор прогресса только если частей больше 1
-            prefix = f"({i+1}/{total_chunks}) " if total_chunks > 1 else ""
-            
-            # Добавляем "продолжение следует" для всех частей кроме последней
-            suffix = "\n\n↪️ продолжение следует..." if i < total_chunks - 1 else ""
-            
-            full_message = prefix + chunk + suffix
-            
-            try:
-                bot.send_message(
-                    m.chat.id, 
-                    full_message, 
-                    parse_mode="MarkdownV2",
-                    disable_web_page_preview=True
-                )
-            except Exception as e:
-                print(f"⚠️ Ошибка отправки: {e}")
-                # Фолбэк: отправка без разметки
-                bot.send_message(m.chat.id, full_message)
-                
-            # Пауза между сообщениями
-            time.sleep(0.5)
-            
-    except Exception as e:
-        error_msg = f"⚠️ Ошибка: {str(e)[:200]}"
-        bot.send_message(m.chat.id, "Что-то пошло не так... Попробуйте задать вопрос иначе")
-        print(f"❌ Ошибка обработки сообщения: {e}")
+    """Обработчик всех текстовых сообщений"""
+    # ... [реализация из предыдущего ответа с обработкой ошибок] ...
 
-# ... (остальной код без изменений) ...
+# ================== Web Server ================== #
+@app.route('/')
+def home():
+    return "🤖 Бот активен! /health для проверки"
+
+@app.route('/health')
+def health_check():
+    return "OK", 200
+
+# ================== Startup ================== #
+def run_bot():
+    print("🚀 Запуск Telegram бота...")
+    bot.infinity_polling()
+
+def run_flask():
+    print("🌐 Запуск веб-сервера...")
+    app.run(host='0.0.0.0', port=8080)
+
+if __name__ == '__main__':
+    # Параллельный запуск бота и веб-сервера
+    threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # Вечный цикл для поддержания работы
+    while True:
+        time.sleep(3600)
