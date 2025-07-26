@@ -4,18 +4,16 @@ import time
 import logging
 import threading
 import requests
+from bs4 import BeautifulSoup
 import telebot
 from flask import Flask
-from functools import wraps
-from telebot import formatting
-from telebot.apihelper import ApiTelegramException
-from bs4 import BeautifulSoup
 from datetime import datetime
 from urllib.parse import urljoin
+import json
 
-# ================== КОНФИГУРАЦИЯ ГИТАРНОЙ ШКОЛЫ ================== #
+# ================== КОНФИГУРАЦИЯ САЙТА ================== #
 SCHOOL_SITE = "https://soundmusic54.ru"
-SCHOOL_PAGES = {
+PAGES = {
     "main": SCHOOL_SITE,
     "production": urljoin(SCHOOL_SITE, "production"),
     "fingerstyle": urljoin(SCHOOL_SITE, "fingerstyle"),
@@ -52,86 +50,253 @@ app = Flask(__name__)
 school_knowledge = {}
 lock = threading.Lock()
 
-# ================== СИСТЕМА ЗНАНИЙ О ШКОЛЕ ================== #
+# ================== ПАРСИНГ САЙТА ================== #
+def parse_page_content(soup, url):
+    """Извлекает структурированный контент со страницы"""
+    content = {}
+    
+    # Заголовок страницы
+    content['title'] = soup.title.string.strip() if soup.title else url
+    
+    # Основной контент
+    main_content = soup.find('main') or soup.find('article') or soup.body
+    if main_content:
+        # Удаляем ненужные элементы
+        for element in main_content(['script', 'style', 'footer', 'header', 'nav', 'form']):
+            element.decompose()
+        
+        # Извлекаем текстовый контент
+        content['text'] = main_content.get_text(separator='\n', strip=True)
+        content['text'] = re.sub(r'\n{3,}', '\n\n', content['text'])
+    
+    # Извлечение ключевых секций
+    sections = {}
+    headers = main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    for header in headers:
+        section_title = header.get_text().strip()
+        section_content = []
+        next_element = header.next_sibling
+        
+        while next_element and next_element.name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            if next_element.name and next_element.get_text().strip():
+                section_content.append(next_element.get_text().strip())
+            next_element = next_element.next_sibling
+        
+        sections[section_title] = '\n'.join(section_content)
+    
+    content['sections'] = sections
+    
+    # Извлечение контактов
+    contacts = {}
+    phone_pattern = re.compile(r'\+?[78]\s?\(?\d{3}\)?\s?\d{3}[\s-]?\d{2}[\s-]?\d{2}')
+    address_pattern = re.compile(r'г\.\s*[А-Яа-я]+\s*,\s*ул\.\s*[А-Яа-я]+\s*,\s*\d+')
+    
+    for text in [content.get('text', '')] + list(sections.values()):
+        phones = phone_pattern.findall(text)
+        addresses = address_pattern.findall(text)
+        
+        if phones:
+            contacts['phones'] = list(set(phones))
+        if addresses:
+            contacts['addresses'] = list(set(addresses))
+    
+    if contacts:
+        content['contacts'] = contacts
+    
+    return content
+
 def load_school_knowledge():
-    """Загружает и парсит информацию со всех страниц сайта школы"""
+    """Загружает и анализирует информацию со всех страниц сайта"""
     logger.info("🎸 Загрузка знаний о гитарной школе...")
     knowledge = {}
     
-    for page_name, url in SCHOOL_PAGES.items():
+    for page_name, url in PAGES.items():
         try:
             response = requests.get(url, timeout=15)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
+            page_content = parse_page_content(soup, url)
+            page_content['url'] = url
+            knowledge[page_name] = page_content
             
-            # Удаляем ненужные элементы
-            for element in soup(['script', 'style', 'footer', 'header', 'nav']):
-                element.decompose()
-            
-            # Извлекаем основной контент
-            content = soup.find('main') or soup.find('article') or soup.find('div', class_='content')
-            
-            if not content:
-                content = soup.body
-            
-            # Очистка и форматирование текста
-            text = content.get_text(separator='\n', strip=True)
-            text = re.sub(r'\n{3,}', '\n\n', text)
-            
-            knowledge[page_name] = {
-                'url': url,
-                'title': soup.title.string if soup.title else page_name,
-                'content': text[:15000]  # Ограничение объема
-            }
-            
-            logger.info(f"✅ Загружено: {page_name} ({len(text)} символов)")
+            logger.info(f"✅ Загружено: {page_name} - {page_content['title']}")
             
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки {url}: {str(e)}")
             knowledge[page_name] = {
                 'url': url,
                 'title': page_name,
-                'content': f"Информация временно недоступна. Посетите: {url}"
+                'text': f"Информация временно недоступна. Посетите: {url}"
             }
+    
+    # Сохраняем знания в файл для отладки
+    with open('school_knowledge.json', 'w', encoding='utf-8') as f:
+        json.dump(knowledge, f, ensure_ascii=False, indent=2)
     
     return knowledge
 
-def get_relevant_knowledge(query: str) -> str:
-    """Находит наиболее релевантную информацию о школе по запросу"""
-    query = query.lower()
-    relevant_info = []
+def find_relevant_sections(query, knowledge_data):
+    """Находит релевантные разделы по запросу"""
+    query_lower = query.lower()
+    results = []
     
-    # Поиск по всем страницам
-    for name, data in school_knowledge.items():
-        content = data['content'].lower()
+    for page_name, page_data in knowledge_data.items():
+        # Поиск в заголовках разделов
+        for section_title, section_content in page_data.get('sections', {}).items():
+            if query_lower in section_title.lower():
+                results.append({
+                    'source': page_data['title'],
+                    'url': page_data['url'],
+                    'title': section_title,
+                    'content': section_content[:1000] + '...' if len(section_content) > 1000 else section_content
+                })
         
-        # Простой поиск по ключевым словам
-        if query in content:
-            # Находим контекст вокруг ключевого слова
-            start_idx = max(0, content.find(query) - 100)
-            end_idx = min(len(content), content.find(query) + len(query) + 300)
-            snippet = data['content'][start_idx:end_idx]
-            
-            relevant_info.append(
-                f"📚 Из раздела '{data['title']}':\n{snippet}...\n"
-                f"🔗 Подробнее: {data['url']}"
-            )
+        # Поиск в основном тексте страницы
+        if 'text' in page_data and query_lower in page_data['text'].lower():
+            # Находим контекст вхождения
+            start_idx = page_data['text'].lower().find(query_lower)
+            if start_idx != -1:
+                end_idx = min(len(page_data['text']), start_idx + 500)
+                snippet = page_data['text'][max(0, start_idx-100):end_idx]
+                
+                results.append({
+                    'source': page_data['title'],
+                    'url': page_data['url'],
+                    'title': "Релевантная информация",
+                    'content': snippet + '...'
+                })
     
-    # Если найдена релевантная информация
-    if relevant_info:
-        return "\n\n".join(relevant_info[:3])  # Не более 3 фрагментов
+    return results[:3]  # Не более 3 результатов
+
+def get_contacts_info(knowledge_data):
+    """Извлекает контактную информацию со всех страниц"""
+    contacts = {'phones': set(), 'addresses': set()}
     
-    # Если ничего не найдено, возвращаем общую информацию
+    for page_data in knowledge_data.values():
+        if 'contacts' in page_data:
+            if 'phones' in page_data['contacts']:
+                contacts['phones'].update(page_data['contacts']['phones'])
+            if 'addresses' in page_data['contacts']:
+                contacts['addresses'].update(page_data['contacts']['addresses'])
+    
+    return {
+        'phones': list(contacts['phones']),
+        'addresses': list(contacts['addresses'])
+    }
+
+# ================== ОБРАБОТКА ЗАПРОСОВ ================== #
+def generate_answer(query, knowledge_data):
+    """Генерирует ответ на основе данных с сайта"""
+    # Специальные обработчики для частых запросов
+    query_lower = query.lower()
+    
+    if any(word in query_lower for word in ['цена', 'стоимость', 'тариф', 'оплат']):
+        price_info = find_relevant_sections("стоимость", knowledge_data)
+        if price_info:
+            response = "🎸 *Стоимость обучения*\n\n"
+            for info in price_info:
+                response += f"🔹 *{info['title']}*\n{info['content']}\n\n"
+            response += f"🔗 Подробнее: {price_info[0]['url']}"
+            return response
+    
+    if any(word in query_lower for word in ['запис', 'контакт', 'телефон', 'адрес']):
+        contacts = get_contacts_info(knowledge_data)
+        response = "📞 *Контактная информация*\n\n"
+        
+        if contacts['phones']:
+            response += "☎️ *Телефоны:*\n" + "\n".join(contacts['phones']) + "\n\n"
+        if contacts['addresses']:
+            response += "📍 *Адреса:*\n" + "\n".join(contacts['addresses']) + "\n\n"
+        
+        response += "💻 *Сайт:* " + SCHOOL_SITE
+        return response
+    
+    if any(word in query_lower for word in ['курс', 'программ', 'обучен', 'занят']):
+        program_info = find_relevant_sections("программ", knowledge_data)
+        if program_info:
+            response = "🎵 *Программы обучения*\n\n"
+            for info in program_info:
+                response += f"🎯 *{info['title']}*\n{info['content']}\n\n"
+            response += f"🔗 Подробнее: {program_info[0]['url']}"
+            return response
+    
+    # Общий поиск по сайту
+    relevant_sections = find_relevant_sections(query, knowledge_data)
+    if relevant_sections:
+        response = "🔍 *Найдена информация по вашему запросу:*\n\n"
+        for i, section in enumerate(relevant_sections):
+            response += f"{i+1}. *{section['title']}* ({section['source']})\n"
+            response += f"{section['content']}\n"
+            response += f"🔗 [Подробнее]({section['url']})\n\n"
+        return response
+    
+    # Если ничего не найдено
     return (
-        "🎸 Информация о гитарной школе SoundMusic54:\n"
-        f"- Основной сайт: {SCHOOL_PAGES['main']}\n"
-        f"- Программы обучения: {SCHOOL_PAGES['production']}\n"
-        f"- FAQ: {SCHOOL_PAGES['faq']}\n\n"
-        "Задайте уточняющий вопрос о направлениях обучения, "
-        "преподавателях или стоимости занятий."
+        "🎸 *SoundMusic54 - экспресс-школа игры на гитаре*\n\n"
+        "К сожалению, я не нашел информации по вашему запросу.\n"
+        "Попробуйте задать вопрос иначе или посетите наш сайт:\n"
+        f"{SCHOOL_SITE}\n\n"
+        "Вы также можете посмотреть:\n"
+        f"- [Программы обучения]({PAGES['production']})\n"
+        f"- [Частые вопросы]({PAGES['faq']})"
     )
 
+# ================== ОБРАБОТЧИКИ TELEGRAM ================== #
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    """Приветственное сообщение о гитарной школе"""
+    welcome_msg = (
+        "🎵 *Добро пожаловать в SoundMusic54!*\n\n"
+        "Я ваш персональный помощник гитарной школы. Чем могу помочь?\n\n"
+        "🔹 Узнать стоимость обучения: спросите 'цены' или 'стоимость'\n"
+        "🔹 Посмотреть программы: спросите 'программы обучения'\n"
+        "🔹 Записаться на занятие: спросите 'как записаться?'\n\n"
+        "Или просто задайте вопрос о школе, гитаре или обучении!\n\n"
+        f"Наш сайт: [{SCHOOL_SITE}]({SCHOOL_SITE})"
+    )
+    
+    try:
+        bot.send_message(
+            message.chat.id,
+            welcome_msg,
+            parse_mode="Markdown",
+            disable_web_page_preview=False
+        )
+    except Exception:
+        bot.send_message(message.chat.id, welcome_msg)
+
+@bot.message_handler(func=lambda m: True)
+def handle_guitar_question(message):
+    """Обработчик вопросов о гитарной школе"""
+    try:
+        # Отправка действия "печатает"
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        # Получаем ответ на основе данных с сайта
+        with lock:
+            response = generate_answer(message.text, school_knowledge)
+        
+        # Отправляем ответ
+        bot.send_message(
+            message.chat.id,
+            response,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+        
+    except Exception as e:
+        logger.exception("Ошибка обработки вопроса")
+        bot.send_message(
+            message.chat.id,
+            "🎸 Здравствуйте! Я помогу с вопросами о гитарной школе SoundMusic54.\n"
+            "Пока не могу ответить на ваш вопрос, но вы можете:\n"
+            f"- Посетить наш сайт: {SCHOOL_SITE}\n"
+            f"- Посмотреть FAQ: {PAGES['faq']}\n\n"
+            "Попробуйте задать вопрос иначе!"
+        )
+
+# ================== СЕРВИСНЫЕ ФУНКЦИИ ================== #
 def refresh_knowledge_periodically():
     """Периодически обновляет знания о школе"""
     while True:
@@ -144,176 +309,16 @@ def refresh_knowledge_periodically():
         except Exception as e:
             logger.error(f"Ошибка обновления знаний: {str(e)}")
 
-# ================== ИНТЕГРАЦИЯ С DEEPSEEK ================== #
-def ask_deepseek(question: str) -> str:
-    """Запрашивает ответ у DeepSeek с контекстом о гитарной школе"""
-    # Получаем релевантную информацию о школе
-    school_info = get_relevant_knowledge(question)
-    
-    # Формируем промпт с контекстом о школе
-    system_prompt = (
-        "Ты — помощник гитарной школы SoundMusic54. Отвечай на вопросы, "
-        "используя информацию о школе. Если вопрос не о школе или гитаре, "
-        "вежливо сообщи о специализации. Вот информация о школе:\n\n"
-        f"{school_info}\n\n"
-        "Ответ должен быть полезным, мотивирующим и профессиональным."
-    )
-    
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question}
-        ],
-        "temperature": 0.7,
-        "max_tokens": 1200
-    }
-    
-    try:
-        response = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            json=payload,
-            headers={"Authorization": f"Bearer {os.getenv('DEEPSEEK_API_KEY')}"},
-            timeout=25
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
-    
-    except Exception as e:
-        logger.error(f"DeepSeek error: {str(e)}")
-        return (
-            "🎸 Здравствуйте! Я помогу с вопросами о гитарной школе SoundMusic54.\n\n"
-            f"Пока я не могу обработать ваш запрос, но вот полезная информация:\n\n"
-            f"{school_info}"
-        )
-
-# ================== ОБРАБОТЧИКИ TELEGRAM ================== #
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    """Приветственное сообщение о гитарной школе"""
-    welcome_msg = (
-        "🎵 *Добро пожаловать в SoundMusic54!*\n\n"
-        "Я ваш персональный помощник гитарной школы. Чем могу помочь?\n\n"
-        "🔹 Узнайте о наших программах обучения\n"
-        "🔹 Получите консультацию по выбору курса\n"
-        "🔹 Узнайте о преподавателях\n"
-        "🔹 Получите информацию о стоимости\n\n"
-        "Просто задайте вопрос о школе, гитаре или обучении!\n\n"
-        "Посетите наш сайт: [soundmusic54.ru](https://soundmusic54.ru)"
-    )
-    
-    try:
-        bot.send_message(
-            message.chat.id,
-            welcome_msg,
-            parse_mode="Markdown",
-            disable_web_page_preview=False
-        )
-    except ApiTelegramException:
-        bot.send_message(message.chat.id, welcome_msg)
-
-@bot.message_handler(commands=['programs'])
-def show_programs(message):
-    """Показывает программы обучения"""
-    try:
-        programs_info = (
-            "🎸 *Наши программы обучения:*\n\n"
-            f"• [Акустическая гитара]({SCHOOL_PAGES['production']})\n"
-            f"• [Фингерстайл]({SCHOOL_PAGES['fingerstyle']})\n"
-            f"• [Электрогитара]({SCHOOL_PAGES['electricguitar']})\n\n"
-            "Выберите направление для подробной информации!"
-        )
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Все программы", url=SCHOOL_PAGES['production']))
-        markup.add(types.InlineKeyboardButton("FAQ", url=SCHOOL_PAGES['faq']))
-        
-        bot.send_message(
-            message.chat.id,
-            programs_info,
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
-    except Exception as e:
-        logger.error(f"Ошибка показа программ: {str(e)}")
-        bot.send_message(
-            message.chat.id,
-            "Посмотрите наши программы на сайте: " + SCHOOL_PAGES['production']
-        )
-
-@bot.message_handler(func=lambda m: True)
-def handle_guitar_question(message):
-    """Обработчик вопросов о гитарной школе"""
-    try:
-        # Отправка действия "печатает"
-        bot.send_chat_action(message.chat.id, 'typing')
-        
-        # Получение ответа с учетом знаний о школе
-        response = ask_deepseek(message.text)
-        
-        # Улучшенная обработка ответа
-        formatted_response = format_guitar_response(response)
-        
-        # Отправка ответа
-        send_safe_message(message.chat.id, formatted_response, reply_to=message.message_id)
-        
-    except Exception as e:
-        logger.exception("Ошибка обработки вопроса")
-        bot.send_message(
-            message.chat.id,
-            "🎸 Здравствуйте! Я помогу с вопросами о гитарной школе SoundMusic54.\n"
-            "Пока не могу ответить на ваш вопрос, но вы можете:\n"
-            f"- Посетить наш сайт: {SCHOOL_PAGES['main']}\n"
-            f"- Посмотреть FAQ: {SCHOOL_PAGES['faq']}\n\n"
-            "Попробуйте задать вопрос иначе или свяжитесь с нами напрямую!"
-        )
-
-# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ================== #
-def format_guitar_response(text: str) -> str:
-    """Форматирует ответ с акцентом на гитарную тематику"""
-    # Добавляем гитарную тематику в ответ
-    guitar_phrases = [
-        "🎸 Ваш звук начинается здесь!",
-        "🎶 Добро пожаловать в мир музыки!",
-        "🔥 Зажигаем новые таланты!",
-        "🎵 SoundMusic54 - твой путь к мастерству!"
-    ]
-    
-    # Добавляем случайную музыкальную фразу
-    import random
-    if random.random() > 0.7:  # 30% вероятности
-        text += f"\n\n{random.choice(guitar_phrases)}"
-    
-    # Добавляем ссылку на сайт
-    if SCHOOL_SITE not in text:
-        text += f"\n\n🔗 Больше информации: {SCHOOL_PAGES['main']}"
-    
-    return text
-
-def send_safe_message(chat_id, text, reply_to=None):
-    """Безопасная отправка сообщений с обработкой ошибок"""
-    try:
-        # Разбиваем длинные сообщения
-        if len(text) > 3000:
-            parts = [text[i:i+3000] for i in range(0, len(text), 3000)]
-            for part in parts:
-                bot.send_message(chat_id, part, reply_to_message_id=reply_to)
-                time.sleep(0.3)
-                reply_to = None  # Только первое сообщение будет ответом
-        else:
-            bot.send_message(chat_id, text, reply_to_message_id=reply_to)
-    except Exception as e:
-        logger.error(f"Ошибка отправки сообщения: {str(e)}")
-        # Попытка отправить без форматирования
-        try:
-            clean_text = re.sub(r'[*_`[]]', '', text)[:4000]
-            bot.send_message(chat_id, clean_text, reply_to_message_id=reply_to)
-        except:
-            bot.send_message(
-                chat_id,
-                "🎸 Ваш запрос получен! Подробнее на сайте: " + SCHOOL_PAGES['main'],
-                reply_to_message_id=reply_to
-            )
+@app.route('/health')
+def health_check():
+    """Проверка работоспособности сервера"""
+    pages_loaded = len(school_knowledge) if school_knowledge else 0
+    return {
+        "status": "OK",
+        "school": "SoundMusic54",
+        "pages_loaded": pages_loaded,
+        "last_update": datetime.utcnow().isoformat()
+    }, 200
 
 # ================== ЗАПУСК СИСТЕМЫ ================== #
 def initialize_bot():
@@ -327,17 +332,11 @@ def initialize_bot():
     # Запуск периодического обновления знаний
     threading.Thread(target=refresh_knowledge_periodically, daemon=True).start()
     
-    # Основные команды
+    # Проверка контактов
+    contacts = get_contacts_info(school_knowledge)
+    logger.info(f"📞 Найдены контакты: {contacts}")
+    
     logger.info("✅ Бот готов к работе!")
-
-@app.route('/health')
-def health_check():
-    return {
-        "status": "OK",
-        "school": "SoundMusic54",
-        "pages_loaded": len(school_knowledge),
-        "last_update": datetime.utcnow().isoformat()
-    }, 200
 
 if __name__ == '__main__':
     initialize_bot()
@@ -349,12 +348,6 @@ if __name__ == '__main__':
     )
     flask_thread.start()
     
-    # Запуск бота с обработкой ошибок
-    while True:
-        try:
-            logger.info("🤖 Запуск Telegram бота...")
-            bot.infinity_polling(timeout=90, long_polling_timeout=40)
-        except Exception as e:
-            logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
-            logger.info("Перезапуск через 15 секунд...")
-            time.sleep(15)
+    # Запуск бота
+    logger.info("🤖 Запуск Telegram бота...")
+    bot.infinity_polling()
