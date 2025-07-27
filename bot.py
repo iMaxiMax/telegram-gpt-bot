@@ -94,9 +94,9 @@ def load_school_knowledge():
             # Используем разные User-Agent
             headers = HEADERS.copy()
             headers['User-Agent'] = random.choice([
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-                'Mozilla/5.0 (X11; Linux x86_64)'
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
             ])
             
             response = session.get(url, headers=headers, timeout=15)
@@ -238,33 +238,38 @@ def initialize_bot():
 
 def run_bot():
     """Запуск бота с защитой от конфликтов"""
-    while True:
-        try:
-            logger.info("🤖 Запуск Telegram бота...")
-            # Удаляем вебхук перед запуском polling
-            bot.remove_webhook()
-            time.sleep(1)
-            
-            # Запускаем polling с увеличенным таймаутом
-            bot.polling(none_stop=True, interval=1, timeout=60)
-            
-        except Exception as e:
-            if "Conflict" in str(e):
-                logger.error("⚠️ Обнаружен конфликт: перезапуск через 30 секунд...")
-                time.sleep(30)
-            else:
-                logger.exception(f"Критическая ошибка бота: {str(e)}")
-                time.sleep(10)
+    logger.info("🤖 Запуск Telegram бота...")
+    
+    # Удаление вебхуков и сброс состояния
+    bot.remove_webhook()
+    time.sleep(2)
+    
+    # Используем инфраструктуру вебхуков для избежания конфликтов
+    WEBHOOK_URL = os.getenv('RAILWAY_STATIC_URL', '') + '/webhook'
+    if WEBHOOK_URL:
+        logger.info(f"🌐 Используем вебхук: {WEBHOOK_URL}")
+        bot.set_webhook(url=WEBHOOK_URL)
+    else:
+        logger.info("⚠️ Не удалось определить URL для вебхука, используем polling")
+        bot.polling(none_stop=True, skip_pending=True)
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик вебхуков"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Invalid content type', 403
+
+def run_flask():
+    """Запуск Flask приложения"""
+    logger.info("🌐 Запуск веб-сервера...")
+    app.run(host='0.0.0.0', port=8080, debug=False)
 
 if __name__ == '__main__':
     initialize_bot()
     
-    # Запуск Flask в отдельном потоке
-    flask_thread = threading.Thread(
-        target=lambda: app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False),
-        daemon=True
-    )
-    flask_thread.start()
-    
-    # Запуск бота с защитой от конфликтов
-    run_bot()
+    # Запускаем Flask в основном потоке
+    run_flask()
