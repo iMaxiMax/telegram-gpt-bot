@@ -1,5 +1,5 @@
-pyTelegramBotAPI==4.14.0
-requests
-beautifulsoup4
-flask
-gunicorn
+requests==2.32.3
+beautifulsoup4==4.12.3
+telebot==0.0.5
+Flask==3.0.3
+python-dotenv==1.0.1
