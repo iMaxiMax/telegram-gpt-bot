@@ -5,6 +5,8 @@ import random
 import logging
 import threading
 import requests
+import sys
+import signal
 from bs4 import BeautifulSoup
 import telebot
 from flask import Flask, request
@@ -53,7 +55,7 @@ if not BOT_TOKEN:
     logger.critical("❌ TELEGRAM_BOT_TOKEN не установен!")
     raise EnvironmentError("Токен бота не найден")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)  # Отключаем многопоточность для Flask
 app = Flask(__name__)
 
 # Глобальное хранилище знаний о школе
@@ -230,12 +232,34 @@ def handle_question(message):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обработчик вебхуков от Telegram"""
+    logger.info("Получен запрос на вебхук")
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
+        logger.debug(f"Получены данные: {json_string[:200]}...")
+        
+        try:
+            update = telebot.types.Update.de_json(json_string)
+            if update.message:
+                logger.info(f"Обработка сообщения от {update.message.from_user.id}")
+            bot.process_new_updates([update])
+            return '', 200
+        except Exception as e:
+            logger.error(f"Ошибка обработки вебхука: {str(e)}")
+            return 'Internal server error', 500
     return 'Invalid content type', 403
+
+def check_webhook():
+    """Проверяет текущие настройки вебхука"""
+    try:
+        webhook_info = bot.get_webhook_info()
+        logger.info(f"Информация о вебхуке:\n"
+                   f"URL: {webhook_info.url}\n"
+                   f"Pending updates: {webhook_info.pending_update_count}\n"
+                   f"Last error: {webhook_info.last_error_message or 'None'}")
+        return webhook_info
+    except Exception as e:
+        logger.error(f"Ошибка проверки вебхука: {str(e)}")
+        return None
 
 # ================== ЗАПУСК СИСТЕМЫ ================== #
 def initialize_bot():
@@ -270,9 +294,18 @@ def setup_webhook():
             WEBHOOK_URL = f'https://{DOMAIN}/webhook'
             logger.info(f"🌐 Устанавливаем вебхук: {WEBHOOK_URL}")
             
+            # Удаляем старый вебхук
             bot.remove_webhook()
             time.sleep(1)
-            bot.set_webhook(url=WEBHOOK_URL)
+            
+            # Устанавливаем новый вебхук
+            bot.set_webhook(
+                url=WEBHOOK_URL,
+                certificate=open('/etc/ssl/certs/ca-certificates.crt', 'rb') if os.path.exists('/etc/ssl/certs/ca-certificates.crt') else None
+            )
+            
+            # Проверяем установку
+            check_webhook()
             return True
         
         logger.error("Не удалось определить URL для вебхука")
@@ -282,8 +315,21 @@ def setup_webhook():
         logger.error(f"Ошибка настройки вебхука: {str(e)}")
         return False
 
+def handle_shutdown(signum, frame):
+    """Обработчик сигналов завершения работы"""
+    logger.info("Получен сигнал завершения, останавливаем сервер...")
+    bot.remove_webhook()
+    sys.exit(0)
+
 if __name__ == '__main__':
+    # Настройка обработчиков сигналов
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+    
     initialize_bot()
+    
+    # Проверяем текущий вебхук перед настройкой
+    check_webhook()
     
     # Настраиваем вебхук
     if not setup_webhook():
@@ -291,10 +337,11 @@ if __name__ == '__main__':
         bot.polling(none_stop=True, skip_pending=True)
     else:
         logger.info("🚀 Бот запущен через вебхуки")
-    
-    # Получаем порт из переменных окружения или используем 8080 по умолчанию
-    port = int(os.getenv('PORT', 8080))
-    
-    # Запускаем production-сервер
-    logger.info(f"🚀 Запуск production-сервера на порту {port}")
-    serve(app, host='0.0.0.0', port=port)
+        check_webhook()  # Проверяем после установки
+        
+        # Получаем порт из переменных окружения
+        port = int(os.getenv('PORT', 8080))
+        logger.info(f"🚀 Запуск production-сервера на порту {port}")
+        
+        # Запускаем сервер
+        serve(app, host='0.0.0.0', port=port)
