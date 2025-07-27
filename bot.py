@@ -11,6 +11,7 @@ from flask import Flask, request
 from datetime import datetime
 from urllib.parse import urljoin
 import json
+from waitress import serve
 
 # ================== КОНФИГУРАЦИЯ САЙТА ================== #
 SCHOOL_SITE = "https://soundmusic54.ru"
@@ -291,5 +292,9 @@ if __name__ == '__main__':
     else:
         logger.info("🚀 Бот запущен через вебхуки")
     
-    # Запускаем Flask
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    # Получаем порт из переменных окружения или используем 8080 по умолчанию
+    port = int(os.getenv('PORT', 8080))
+    
+    # Запускаем production-сервер
+    logger.info(f"🚀 Запуск production-сервера на порту {port}")
+    serve(app, host='0.0.0.0', port=port)
