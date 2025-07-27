@@ -250,21 +250,27 @@ def initialize_bot():
 def setup_webhook():
     """Настройка вебхука"""
     try:
-        # Получаем домен из переменных окружения
+        # Пробуем получить домен из стандартных переменных Railway
         DOMAIN = os.getenv('RAILWAY_PUBLIC_DOMAIN', '')
+        
+        # Если не найдено, пробуем альтернативные варианты
         if not DOMAIN:
-            logger.warning("Переменная RAILWAY_PUBLIC_DOMAIN не установлена!")
             DOMAIN = os.getenv('RAILWAY_STATIC_URL', '').replace('https://', '')
+        
+        if not DOMAIN:
+            # Автоматическое определение для Railway
+            if 'RAILWAY_ENVIRONMENT' in os.environ:
+                project_name = os.getenv('RAILWAY_PROJECT_NAME')
+                service_name = os.getenv('RAILWAY_SERVICE_NAME')
+                if project_name and service_name:
+                    DOMAIN = f'{project_name}-{service_name}.up.railway.app'
         
         if DOMAIN:
             WEBHOOK_URL = f'https://{DOMAIN}/webhook'
             logger.info(f"🌐 Устанавливаем вебхук: {WEBHOOK_URL}")
             
-            # Удаляем старый вебхук
             bot.remove_webhook()
             time.sleep(1)
-            
-            # Устанавливаем новый вебхук
             bot.set_webhook(url=WEBHOOK_URL)
             return True
         
