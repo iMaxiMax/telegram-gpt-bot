@@ -7,7 +7,7 @@ import threading
 import requests
 from bs4 import BeautifulSoup
 import telebot
-from flask import Flask
+from flask import Flask, request
 from datetime import datetime
 from urllib.parse import urljoin
 import json
@@ -225,6 +225,17 @@ def handle_question(message):
             f"{SCHOOL_SITE}"
         )
 
+# ================== ВЕБХУКИ ================== #
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик вебхуков от Telegram"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return 'Invalid content type', 403
+
 # ================== ЗАПУСК СИСТЕМЫ ================== #
 def initialize_bot():
     """Инициализация бота"""
@@ -236,40 +247,43 @@ def initialize_bot():
     
     logger.info("✅ Бот готов к работе!")
 
-def run_bot():
-    """Запуск бота с защитой от конфликтов"""
-    logger.info("🤖 Запуск Telegram бота...")
+def setup_webhook():
+    """Настройка вебхука"""
+    try:
+        # Получаем домен из переменных окружения
+        DOMAIN = os.getenv('RAILWAY_PUBLIC_DOMAIN', '')
+        if not DOMAIN:
+            logger.warning("Переменная RAILWAY_PUBLIC_DOMAIN не установлена!")
+            DOMAIN = os.getenv('RAILWAY_STATIC_URL', '').replace('https://', '')
+        
+        if DOMAIN:
+            WEBHOOK_URL = f'https://{DOMAIN}/webhook'
+            logger.info(f"🌐 Устанавливаем вебхук: {WEBHOOK_URL}")
+            
+            # Удаляем старый вебхук
+            bot.remove_webhook()
+            time.sleep(1)
+            
+            # Устанавливаем новый вебхук
+            bot.set_webhook(url=WEBHOOK_URL)
+            return True
+        
+        logger.error("Не удалось определить URL для вебхука")
+        return False
     
-    # Удаление вебхуков и сброс состояния
-    bot.remove_webhook()
-    time.sleep(2)
-    
-    # Используем инфраструктуру вебхуков для избежания конфликтов
-    WEBHOOK_URL = os.getenv('RAILWAY_STATIC_URL', '') + '/webhook'
-    if WEBHOOK_URL:
-        logger.info(f"🌐 Используем вебхук: {WEBHOOK_URL}")
-        bot.set_webhook(url=WEBHOOK_URL)
-    else:
-        logger.info("⚠️ Не удалось определить URL для вебхука, используем polling")
-        bot.polling(none_stop=True, skip_pending=True)
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Обработчик вебхуков"""
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return ''
-    return 'Invalid content type', 403
-
-def run_flask():
-    """Запуск Flask приложения"""
-    logger.info("🌐 Запуск веб-сервера...")
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    except Exception as e:
+        logger.error(f"Ошибка настройки вебхука: {str(e)}")
+        return False
 
 if __name__ == '__main__':
     initialize_bot()
     
-    # Запускаем Flask в основном потоке
-    run_flask()
+    # Настраиваем вебхук
+    if not setup_webhook():
+        logger.error("⚠️ Запускаем в режиме polling")
+        bot.polling(none_stop=True, skip_pending=True)
+    else:
+        logger.info("🚀 Бот запущен через вебхуки")
+    
+    # Запускаем Flask
+    app.run(host='0.0.0.0', port=8080, debug=False)
