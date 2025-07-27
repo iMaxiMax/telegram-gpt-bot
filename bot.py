@@ -25,6 +25,14 @@ PAGES = {
     "faq": urljoin(SCHOOL_SITE, "faq")
 }
 
+# Заголовки для обхода защиты от парсинга
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+    'Connection': 'keep-alive',
+}
+
 # ================== НАСТРОЙКА ЛОГГИРОВАНИЯ ================== #
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +58,7 @@ app = Flask(__name__)
 school_knowledge = {}
 lock = threading.Lock()
 
-# ================== ПАРСИНГ САЙТА ================== #
+# ================== ПАРСИНГ САЙТА С ЗАЩИТОЙ ОТ БЛОКИРОВОК ================== #
 def parse_page_content(soup, url):
     """Извлекает структурированный контент со страницы"""
     content = {}
@@ -69,50 +77,27 @@ def parse_page_content(soup, url):
         content['text'] = main_content.get_text(separator='\n', strip=True)
         content['text'] = re.sub(r'\n{3,}', '\n\n', content['text'])
     
-    # Извлечение ключевых секций
-    sections = {}
-    headers = main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-    for header in headers:
-        section_title = header.get_text().strip()
-        section_content = []
-        next_element = header.next_sibling
-        
-        while next_element and next_element.name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-            if next_element.name and next_element.get_text().strip():
-                section_content.append(next_element.get_text().strip())
-            next_element = next_element.next_sibling
-        
-        sections[section_title] = '\n'.join(section_content)
-    
-    content['sections'] = sections
-    
-    # Извлечение контактов
-    contacts = {}
-    phone_pattern = re.compile(r'\+?[78]\s?\(?\d{3}\)?\s?\d{3}[\s-]?\d{2}[\s-]?\d{2}')
-    address_pattern = re.compile(r'г\.\s*[А-Яа-я]+\s*,\s*ул\.\s*[А-Яа-я]+\s*,\s*\d+')
-    
-    for text in [content.get('text', '')] + list(sections.values()):
-        phones = phone_pattern.findall(text)
-        addresses = address_pattern.findall(text)
-        
-        if phones:
-            contacts['phones'] = list(set(phones))
-        if addresses:
-            contacts['addresses'] = list(set(addresses))
-    
-    if contacts:
-        content['contacts'] = contacts
-    
     return content
 
 def load_school_knowledge():
     """Загружает и анализирует информацию со всех страниц сайта"""
     logger.info("🎸 Загрузка знаний о гитарной школе...")
     knowledge = {}
+    session = requests.Session()
     
     for page_name, url in PAGES.items():
         try:
-            response = requests.get(url, timeout=15)
+            # Используем заголовки и случайные задержки для имитации браузера
+            time.sleep(1.5)
+            response = session.get(url, headers=HEADERS, timeout=15)
+            
+            # Проверка на ошибки доступа
+            if response.status_code == 403:
+                logger.warning(f"Обнаружена блокировка для {url}, пробуем обойти...")
+                # Пробуем разные User-Agent
+                HEADERS['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15'
+                response = session.get(url, headers=HEADERS, timeout=15)
+            
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -130,10 +115,6 @@ def load_school_knowledge():
                 'text': f"Информация временно недоступна. Посетите: {url}"
             }
     
-    # Сохраняем знания в файл для отладки
-    with open('school_knowledge.json', 'w', encoding='utf-8') as f:
-        json.dump(knowledge, f, ensure_ascii=False, indent=2)
-    
     return knowledge
 
 def find_relevant_sections(query, knowledge_data):
@@ -142,16 +123,6 @@ def find_relevant_sections(query, knowledge_data):
     results = []
     
     for page_name, page_data in knowledge_data.items():
-        # Поиск в заголовках разделов
-        for section_title, section_content in page_data.get('sections', {}).items():
-            if query_lower in section_title.lower():
-                results.append({
-                    'source': page_data['title'],
-                    'url': page_data['url'],
-                    'title': section_title,
-                    'content': section_content[:1000] + '...' if len(section_content) > 1000 else section_content
-                })
-        
         # Поиск в основном тексте страницы
         if 'text' in page_data and query_lower in page_data['text'].lower():
             # Находим контекст вхождения
@@ -172,13 +143,21 @@ def find_relevant_sections(query, knowledge_data):
 def get_contacts_info(knowledge_data):
     """Извлекает контактную информацию со всех страниц"""
     contacts = {'phones': set(), 'addresses': set()}
+    phone_pattern = re.compile(r'\+?[78]\s?\(?\d{3}\)?\s?\d{3}[\s-]?\d{2}[\s-]?\d{2}')
+    address_pattern = re.compile(r'г\.\s*[А-Яа-я]+\s*,\s*ул\.\s*[А-Яа-я]+\s*,\s*\d+')
     
     for page_data in knowledge_data.values():
-        if 'contacts' in page_data:
-            if 'phones' in page_data['contacts']:
-                contacts['phones'].update(page_data['contacts']['phones'])
-            if 'addresses' in page_data['contacts']:
-                contacts['addresses'].update(page_data['contacts']['addresses'])
+        if 'text' in page_data:
+            text = page_data['text']
+            # Поиск телефонов
+            phones = phone_pattern.findall(text)
+            if phones:
+                contacts['phones'].update(phones)
+            
+            # Поиск адресов
+            addresses = address_pattern.findall(text)
+            if addresses:
+                contacts['addresses'].update(addresses)
     
     return {
         'phones': list(contacts['phones']),
@@ -191,35 +170,23 @@ def generate_answer(query, knowledge_data):
     # Специальные обработчики для частых запросов
     query_lower = query.lower()
     
-    if any(word in query_lower for word in ['цена', 'стоимость', 'тариф', 'оплат']):
-        price_info = find_relevant_sections("стоимость", knowledge_data)
-        if price_info:
-            response = "🎸 *Стоимость обучения*\n\n"
-            for info in price_info:
-                response += f"🔹 *{info['title']}*\n{info['content']}\n\n"
-            response += f"🔗 Подробнее: {price_info[0]['url']}"
-            return response
-    
+    # Поиск контактов
     if any(word in query_lower for word in ['запис', 'контакт', 'телефон', 'адрес']):
         contacts = get_contacts_info(knowledge_data)
         response = "📞 *Контактная информация*\n\n"
         
         if contacts['phones']:
             response += "☎️ *Телефоны:*\n" + "\n".join(contacts['phones']) + "\n\n"
+        else:
+            response += "ℹ️ Телефоны не найдены на сайте\n\n"
+        
         if contacts['addresses']:
             response += "📍 *Адреса:*\n" + "\n".join(contacts['addresses']) + "\n\n"
+        else:
+            response += "ℹ️ Адреса не найдены на сайте\n\n"
         
         response += "💻 *Сайт:* " + SCHOOL_SITE
         return response
-    
-    if any(word in query_lower for word in ['курс', 'программ', 'обучен', 'занят']):
-        program_info = find_relevant_sections("программ", knowledge_data)
-        if program_info:
-            response = "🎵 *Программы обучения*\n\n"
-            for info in program_info:
-                response += f"🎯 *{info['title']}*\n{info['content']}\n\n"
-            response += f"🔗 Подробнее: {program_info[0]['url']}"
-            return response
     
     # Общий поиск по сайту
     relevant_sections = find_relevant_sections(query, knowledge_data)
@@ -238,7 +205,7 @@ def generate_answer(query, knowledge_data):
         "Попробуйте задать вопрос иначе или посетите наш сайт:\n"
         f"{SCHOOL_SITE}\n\n"
         "Вы также можете посмотреть:\n"
-        f"- [Программы обучения]({PAGES['production']})\n"
+        f"- [Главная страница]({PAGES['main']})\n"
         f"- [Частые вопросы]({PAGES['faq']})"
     )
 
@@ -249,10 +216,10 @@ def send_welcome(message):
     welcome_msg = (
         "🎵 *Добро пожаловать в SoundMusic54!*\n\n"
         "Я ваш персональный помощник гитарной школы. Чем могу помочь?\n\n"
-        "🔹 Узнать стоимость обучения: спросите 'цены' или 'стоимость'\n"
-        "🔹 Посмотреть программы: спросите 'программы обучения'\n"
-        "🔹 Записаться на занятие: спросите 'как записаться?'\n\n"
-        "Или просто задайте вопрос о школе, гитаре или обучении!\n\n"
+        "🔹 Узнать информацию о школе\n"
+        "🔹 Уточнить контактные данные\n"
+        "🔹 Получить сведения о программах обучения\n\n"
+        "Просто задайте вопрос о школе или гитаре!\n\n"
         f"Наш сайт: [{SCHOOL_SITE}]({SCHOOL_SITE})"
     )
     
@@ -338,6 +305,20 @@ def initialize_bot():
     
     logger.info("✅ Бот готов к работе!")
 
+def run_bot_safely():
+    """Запуск бота с защитой от конфликтов"""
+    while True:
+        try:
+            logger.info("🤖 Запуск Telegram бота...")
+            bot.infinity_polling(timeout=90, long_polling_timeout=40, skip_pending=True)
+        except Exception as e:
+            if "Conflict" in str(e):
+                logger.error("⚠️ Обнаружен конфликт: другой экземпляр бота уже запущен. Перезапуск через 10 секунд...")
+                time.sleep(10)
+            else:
+                logger.exception("Критическая ошибка бота:")
+                time.sleep(10)
+
 if __name__ == '__main__':
     initialize_bot()
     
@@ -348,6 +329,5 @@ if __name__ == '__main__':
     )
     flask_thread.start()
     
-    # Запуск бота
-    logger.info("🤖 Запуск Telegram бота...")
-    bot.infinity_polling()
+    # Запуск бота с защитой от конфликтов
+    run_bot_safely()
